@@ -85,10 +85,10 @@ spec:
         # Skip when node-count is 0 to avoid upgrading the release with no nodes to process.
         - - name: helm-upgrade-once
             template: helm-upgrade-global
-            when: "{{`{{steps.get-nodes.outputs.parameters.node-count}}`}} != \"0\""
+            when: "{{`{{steps.get-nodes.outputs.parameters.node-count}}`}} != 0"
         - - name: deploy-nodes-sequentially
             template: deploy-node-chain
-            when: "{{`{{steps.get-nodes.outputs.parameters.node-count}}`}} != \"0\""
+            when: "{{`{{steps.get-nodes.outputs.parameters.node-count}}`}} != 0"
             arguments:
               parameters:
                 - name: nodes-json
