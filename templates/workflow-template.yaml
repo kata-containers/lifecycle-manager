@@ -359,6 +359,7 @@ spec:
             echo "[]" > /tmp/nodes.json
             echo "0" > /tmp/count.txt
             echo "No nodes found matching label selector"
+            sleep 10
             exit 0
           fi
 
@@ -385,6 +386,7 @@ spec:
             echo "[]" > /tmp/nodes.json
             echo "0" > /tmp/count.txt
             echo "No nodes found matching selection criteria"
+            sleep 10
             exit 0
           fi
 
@@ -624,6 +626,11 @@ spec:
             echo "Warning: No kata-deploy pod found on node $NODE"
           fi
 
+          # Allow the Argo executor sidecar to finish initialising before the
+          # main container exits.  Without this pause, very short-lived steps
+          # can race with the executor and report "Unknown (exit code 255)".
+          sleep 10
+
     # =========================================================================
     # WAIT FOR KATA-DEPLOY READY
     # =========================================================================
@@ -662,6 +669,7 @@ spec:
               if kubectl wait pod "$POD" -n "$NS" --for=condition=Ready --timeout=10s 2>/dev/null; then
                 echo "kata-deploy pod $POD is ready"
                 trap - EXIT
+                sleep 10
                 exit 0
               fi
             fi
@@ -759,6 +767,7 @@ spec:
               katacontainers.io/kata-lifecycle-manager-status="completed" \
               katacontainers.io/kata-current-version="$VERSION"
             echo "Node $NODE upgrade completed successfully"
+            sleep 10
             exit 0
           else
             # Failure path: automatic rollback
@@ -879,3 +888,5 @@ spec:
 
           kubectl annotate node "$NODE" --overwrite katacontainers.io/kata-lifecycle-manager-status="rolled-back"
           kubectl uncordon "$NODE"
+
+          sleep 10
