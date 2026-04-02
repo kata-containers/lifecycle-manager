@@ -102,6 +102,8 @@ spec:
     # CHECK PREREQUISITES (fail fast if verification pod not configured)
     # =========================================================================
     - name: check-prerequisites
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
       tolerations:
         - key: node.kubernetes.io/unschedulable
           operator: Exists
@@ -189,6 +191,8 @@ spec:
         parameters:
           - name: nodes-json
           - name: node-count
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
       tolerations:
         - key: node.kubernetes.io/unschedulable
           operator: Exists
@@ -288,6 +292,8 @@ spec:
           - name: next-index
             valueFrom:
               path: /tmp/next-index.txt
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
       tolerations:
         - key: node.kubernetes.io/unschedulable
           operator: Exists
@@ -323,7 +329,8 @@ spec:
     # GET TARGET NODES (supports label selector, taint selector, or both)
     # =========================================================================
     - name: get-target-nodes
-      # Tolerate system taints so workflow pods can schedule during upgrades
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
       tolerations:
         - key: node.kubernetes.io/unschedulable
           operator: Exists
@@ -510,6 +517,8 @@ spec:
       inputs:
         parameters:
           - name: node-name
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
       tolerations:
         - key: node.kubernetes.io/unschedulable
           operator: Exists
@@ -548,6 +557,8 @@ spec:
     # Requires kata-deploy chart >= 3.27.0 so updateStrategy is applied by the chart.
     # =========================================================================
     - name: helm-upgrade-global
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
       tolerations:
         - key: node.kubernetes.io/unschedulable
           operator: Exists
@@ -602,6 +613,8 @@ spec:
       inputs:
         parameters:
           - name: node-name
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
       tolerations:
         - key: node.kubernetes.io/unschedulable
           operator: Exists
@@ -652,6 +665,8 @@ spec:
       inputs:
         parameters:
           - name: node-name
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
       tolerations:
         - key: node.kubernetes.io/unschedulable
           operator: Exists
@@ -699,6 +714,8 @@ spec:
       inputs:
         parameters:
           - name: node-name
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
       tolerations:
         - key: node.kubernetes.io/unschedulable
           operator: Exists
@@ -847,6 +864,8 @@ spec:
     # PRINT SUMMARY
     # =========================================================================
     - name: print-summary
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
       tolerations:
         - key: node.kubernetes.io/unschedulable
           operator: Exists
@@ -871,6 +890,8 @@ spec:
       inputs:
         parameters:
           - name: node-name
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
       tolerations:
         - key: node.kubernetes.io/unschedulable
           operator: Exists
