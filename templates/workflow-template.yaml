@@ -617,7 +617,15 @@ spec:
           NODE="{{`{{inputs.parameters.node-name}}`}}"
           NS="{{`{{workflow.parameters.helm-namespace}}`}}"
 
+          TAINT_KEY="{{`{{workflow.parameters.node-taint-key}}`}}"
+
           kubectl annotate node "$NODE" --overwrite katacontainers.io/kata-lifecycle-manager-status="deploying"
+
+          # Remove the selection taint before deleting the pod so the
+          # DaemonSet controller can schedule the replacement.
+          if [[ -n "$TAINT_KEY" ]]; then
+            kubectl taint node "$NODE" "${TAINT_KEY}-" 2>/dev/null || true
+          fi
 
           # Delete the kata-deploy pod on THIS specific node to trigger the upgrade.
           # With updateStrategy=OnDelete, the pod won't restart until we delete it.
@@ -709,6 +717,8 @@ spec:
           NS="{{`{{workflow.parameters.helm-namespace}}`}}"
           VERSION="{{`{{workflow.parameters.target-version}}`}}"
           VERIFICATION_POD="{{`{{workflow.parameters.verification-pod}}`}}"
+          TAINT_KEY="{{`{{workflow.parameters.node-taint-key}}`}}"
+          TAINT_VALUE="{{`{{workflow.parameters.node-taint-value}}`}}"
           # Pod names must be DNS-1123: lowercase, hyphens only (no underscores)
           NODE_SAFE=$(echo "$NODE" | tr '[:upper:]' '[:lower:]' | tr '_' '-')
           TEST_POD="kata-verify-${NODE_SAFE}-$(date +%s)"
@@ -765,10 +775,25 @@ spec:
           cleanup_pod
           trap - EXIT
 
+          # Re-apply the selection taint that was removed in helm-upgrade so
+          # the node remains selectable for future taint-based operations.
+          restore_taint() {
+            if [[ -n "$TAINT_KEY" ]]; then
+              local effect="NoSchedule"
+              if [[ -n "$TAINT_VALUE" ]]; then
+                kubectl taint node "$NODE" "${TAINT_KEY}=${TAINT_VALUE}:${effect}" 2>/dev/null || true
+              else
+                kubectl taint node "$NODE" "${TAINT_KEY}:${effect}" 2>/dev/null || true
+              fi
+              echo "Re-applied taint ${TAINT_KEY} on node $NODE"
+            fi
+          }
+
           if [ "$VERIFY_SUCCESS" = "true" ]; then
             # Success path: uncordon and mark complete
             echo "Uncordoning node $NODE..."
             kubectl uncordon "$NODE"
+            restore_taint
             kubectl annotate node "$NODE" --overwrite \
               katacontainers.io/kata-lifecycle-manager-status="completed" \
               katacontainers.io/kata-current-version="$VERSION"
@@ -810,6 +835,7 @@ spec:
 
             # Uncordon and mark as rolled back
             kubectl uncordon "$NODE"
+            restore_taint
             kubectl annotate node "$NODE" --overwrite katacontainers.io/kata-lifecycle-manager-status="rolled-back"
             echo "Node $NODE rolled back to previous version"
 
@@ -854,12 +880,14 @@ spec:
           operator: Exists
       script:
         image: "{{`{{workflow.parameters.utils-image}}`}}"
-        command: [sh]
+        command: [bash]
         source: |
           set -e
           NODE="{{`{{inputs.parameters.node-name}}`}}"
           RELEASE="{{`{{workflow.parameters.helm-release}}`}}"
           NS="{{`{{workflow.parameters.helm-namespace}}`}}"
+          TAINT_KEY="{{`{{workflow.parameters.node-taint-key}}`}}"
+          TAINT_VALUE="{{`{{workflow.parameters.node-taint-value}}`}}"
 
           apk add --no-cache -q kubectl
           kubectl annotate node "$NODE" --overwrite katacontainers.io/kata-lifecycle-manager-status="rolling-back"
@@ -891,6 +919,17 @@ spec:
             echo "Waiting... ($i/60)"
             sleep 5
           done
+
+          # Re-apply the selection taint removed during helm-upgrade.
+          if [[ -n "$TAINT_KEY" ]]; then
+            effect="NoSchedule"
+            if [[ -n "$TAINT_VALUE" ]]; then
+              kubectl taint node "$NODE" "${TAINT_KEY}=${TAINT_VALUE}:${effect}" 2>/dev/null || true
+            else
+              kubectl taint node "$NODE" "${TAINT_KEY}:${effect}" 2>/dev/null || true
+            fi
+            echo "Re-applied taint ${TAINT_KEY} on node $NODE"
+          fi
 
           kubectl annotate node "$NODE" --overwrite katacontainers.io/kata-lifecycle-manager-status="rolled-back"
           kubectl uncordon "$NODE"
