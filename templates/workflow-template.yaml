@@ -363,20 +363,26 @@ spec:
             exit 0
           fi
 
-          # If taint key specified, filter nodes by taint
+          # If taint key specified, filter nodes by taint.
+          # Avoid JSONPath '&&' which is unreliable across kubectl versions;
+          # instead, match by key first, then compare the value in the shell.
           if [[ -n "$TAINT_KEY" ]]; then
             TAINT_FILTERED=""
             for node in $NODE_NAMES; do
-              # Get taints for this node
+              TAINT_VAL=$(kubectl get node "$node" -o \
+                jsonpath="{.spec.taints[?(@.key=='$TAINT_KEY')].value}" 2>/dev/null || echo "")
               if [[ -n "$TAINT_VALUE" ]]; then
-                # Check for specific taint key=value
-                HAS_TAINT=$(kubectl get node "$node" -o jsonpath="{.spec.taints[?(@.key=='$TAINT_KEY' && @.value=='$TAINT_VALUE')].key}" 2>/dev/null || echo "")
+                # Match specific key=value
+                if [[ "$TAINT_VAL" == "$TAINT_VALUE" ]]; then
+                  TAINT_FILTERED="$TAINT_FILTERED $node"
+                fi
               else
-                # Check for taint key only
-                HAS_TAINT=$(kubectl get node "$node" -o jsonpath="{.spec.taints[?(@.key=='$TAINT_KEY')].key}" 2>/dev/null || echo "")
-              fi
-              if [[ -n "$HAS_TAINT" ]]; then
-                TAINT_FILTERED="$TAINT_FILTERED $node"
+                # Match key only (any value, including empty)
+                HAS_KEY=$(kubectl get node "$node" -o \
+                  jsonpath="{.spec.taints[?(@.key=='$TAINT_KEY')].key}" 2>/dev/null || echo "")
+                if [[ -n "$HAS_KEY" ]]; then
+                  TAINT_FILTERED="$TAINT_FILTERED $node"
+                fi
               fi
             done
             NODE_NAMES=$(echo "$TAINT_FILTERED" | xargs)
