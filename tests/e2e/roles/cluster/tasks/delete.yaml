@@ -1,0 +1,14 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Delete kcli cluster {{ cluster_name }}
+  ansible.builtin.command:
+    cmd: kcli delete kube -y {{ cluster_name }}
+  register: kcli_delete
+  changed_when: kcli_delete.rc == 0
+  failed_when: false
+
+- name: Remove kcli cluster directory
+  ansible.builtin.file:
+    path: "{{ lookup('env', 'HOME') }}/.kcli/clusters/{{ cluster_name }}"
+    state: absent

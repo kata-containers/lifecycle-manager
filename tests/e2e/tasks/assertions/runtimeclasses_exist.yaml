@@ -1,0 +1,17 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Assert that kata runtimeclasses are present in the cluster.
+---
+- name: Get runtimeclasses matching kata
+  ansible.builtin.shell:
+    cmd: kubectl get runtimeclass -o name | grep kata || true
+  register: _runtimeclasses
+  changed_when: false
+
+- name: Assert at least one kata runtimeclass exists
+  ansible.builtin.assert:
+    that:
+      - _runtimeclasses.stdout_lines | length > 0
+    fail_msg: "No kata runtimeclasses found"
+    success_msg: "Found {{ _runtimeclasses.stdout_lines | length }} kata runtimeclass(es)"

@@ -1,0 +1,24 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Verification pod requesting a non-existent resource.
+# Stays in Pending permanently, triggers 180s timeout and auto-rollback.
+# Used by TC-09.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${TEST_POD}
+spec:
+  runtimeClassName: kata-qemu
+  restartPolicy: Never
+  nodeSelector:
+    kubernetes.io/hostname: ${NODE}
+  tolerations:
+    - operator: Exists
+  containers:
+    - name: verify
+      image: quay.io/kata-containers/alpine-bash-curl:latest
+      command: ["sh", "-c", "echo SUCCESS"]
+      resources:
+        limits:
+          fake-resource.io/nonexistent: "100"

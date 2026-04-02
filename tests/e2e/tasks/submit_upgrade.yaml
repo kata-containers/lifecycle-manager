@@ -1,0 +1,50 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Submit an upgrade workflow via argo CLI.
+#
+# Required vars:
+#   target_version - kata-deploy version to upgrade to
+#   node_selector  - label selector for nodes
+#
+# Optional vars:
+#   extra_submit_args - additional -p flags (string)
+---
+- name: Build argo submit command
+  ansible.builtin.set_fact:
+    _submit_cmd: >-
+      argo submit -n {{ argo_namespace }}
+      --from workflowtemplate/kata-lifecycle-manager
+      -p target-version={{ target_version }}
+      -p node-selector="{{ node_selector }}"
+      {{ extra_submit_args | default('') }}
+
+- name: Show argo submit command
+  ansible.builtin.debug:
+    msg: "{{ _submit_cmd }}"
+
+- name: Submit upgrade workflow
+  ansible.builtin.shell:
+    cmd: "{{ _submit_cmd }}"
+  register: submit_result
+  changed_when: submit_result.rc == 0
+
+- name: Show submit output
+  ansible.builtin.debug:
+    msg: "{{ submit_result.stdout }}"
+
+- name: Verify workflow parameters after submission
+  ansible.builtin.shell: |
+    argo get @latest -n {{ argo_namespace }} -o json | python3 -c "
+    import json, sys
+    wf = json.load(sys.stdin)
+    params = wf.get('spec', {}).get('arguments', {}).get('parameters', [])
+    for p in params:
+        print(f\"{p['name']} = {p.get('value', '<unset>')}\")
+    "
+  register: _wf_params
+  changed_when: false
+
+- name: Show workflow parameters
+  ansible.builtin.debug:
+    msg: "{{ _wf_params.stdout }}"

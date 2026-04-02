@@ -1,0 +1,86 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# TC-08: No Matching Nodes
+# Submits an upgrade when no nodes carry the lifecycle-manager label.
+# The workflow should succeed with zero nodes processed, leaving
+# the cluster state unchanged.
+---
+- name: "TC-08: No Matching Nodes"
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Reset environment
+      ansible.builtin.include_tasks: ../tasks/reset_environment.yaml
+
+    - name: Record kata binary version before workflow
+      ansible.builtin.include_tasks: ../tasks/assertions/kata_binary_version.yaml
+      vars:
+        node_name: "{{ worker_node_a }}"
+        version_fact_name: "_kata_version_before"
+        version_label: "before workflow"
+
+    - name: Build extra submit arguments
+      ansible.builtin.set_fact:
+        _tc08_extra_args: >-
+          {{ '-p helm-set-values="' + kata_to_helm_set_values + '"' if kata_to_helm_set_values | default('') | length > 0 else '' }}
+
+    - name: Submit upgrade with no labeled nodes
+      ansible.builtin.include_tasks: ../tasks/submit_upgrade.yaml
+      vars:
+        target_version: "{{ kata_to_version }}"
+        node_selector: "katacontainers.io/kata-lifecycle-manager-window=true"
+        extra_submit_args: "{{ _tc08_extra_args }}"
+
+    - name: Wait for workflow to finish
+      ansible.builtin.include_tasks: ../tasks/wait_workflow.yaml
+
+    - name: Assert workflow succeeded
+      ansible.builtin.include_tasks: ../tasks/assertions/workflow_status.yaml
+      vars:
+        expected_status: Succeeded
+
+    - name: Assert kata-deploy image still at from_version on worker node A
+      ansible.builtin.include_tasks: ../tasks/assertions/kata_deploy_image.yaml
+      vars:
+        node_name: "{{ worker_node_a }}"
+        expected_image: "{{ kata_from_version }}"
+
+    - name: Assert kata-deploy image still at from_version on worker node B
+      ansible.builtin.include_tasks: ../tasks/assertions/kata_deploy_image.yaml
+      vars:
+        node_name: "{{ worker_node_b }}"
+        expected_image: "{{ kata_from_version }}"
+
+    - name: Record kata binary version after workflow
+      ansible.builtin.include_tasks: ../tasks/assertions/kata_binary_version.yaml
+      vars:
+        node_name: "{{ worker_node_a }}"
+        version_fact_name: "_kata_version_after"
+        version_label: "after workflow"
+
+    - name: Assert kata binary version unchanged
+      ansible.builtin.assert:
+        that:
+          - _kata_version_before == _kata_version_after
+        fail_msg: >-
+          kata-runtime version changed when no nodes matched:
+          before='{{ _kata_version_before }}', after='{{ _kata_version_after }}'
+        success_msg: >-
+          kata-runtime version unchanged (no nodes matched):
+          before='{{ _kata_version_before }}', after='{{ _kata_version_after }}'
+
+    - name: Get helm revision count
+      ansible.builtin.shell:
+        cmd: >-
+          helm history {{ helm_release }} -n {{ helm_namespace }}
+          -o json | jq length
+      register: _helm_revision_count
+      changed_when: false
+
+    - name: Assert no new helm revision was created for upgrade
+      ansible.builtin.assert:
+        that:
+          - _helm_revision_count.stdout | int == 1
+        fail_msg: "Expected 1 helm revision (initial install only), found {{ _helm_revision_count.stdout }}"
+        success_msg: "Helm has exactly 1 revision (no upgrade occurred)"

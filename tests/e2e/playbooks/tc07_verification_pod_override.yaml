@@ -1,0 +1,92 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# TC-07: Verification Pod Override + Placeholder Substitution
+# Submits an upgrade with a custom verification pod (base64-encoded),
+# verifying placeholder substitution and cleanup of the verification pod.
+---
+- name: "TC-07: Verification Pod Override + Placeholder Substitution"
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Reset environment
+      ansible.builtin.include_tasks: ../tasks/reset_environment.yaml
+
+    - name: Base64-encode verification pod manifest
+      ansible.builtin.shell:
+        cmd: base64 -w0 {{ playbook_dir }}/../files/simple-verification-pod.yaml
+      register: verification_pod_b64
+      changed_when: false
+
+    - name: Label worker node A for upgrade
+      ansible.builtin.command:
+        cmd: >-
+          kubectl label node {{ worker_node_a }}
+          katacontainers.io/kata-lifecycle-manager-window=true
+          --overwrite
+
+    - name: Record kata binary version before upgrade
+      ansible.builtin.include_tasks: ../tasks/assertions/kata_binary_version.yaml
+      vars:
+        node_name: "{{ worker_node_a }}"
+        version_fact_name: "_kata_version_before"
+        version_label: "before upgrade"
+
+    - name: Build extra submit arguments
+      ansible.builtin.set_fact:
+        _tc07_extra_args: >-
+          -p verification-pod="{{ verification_pod_b64.stdout }}"
+          {{ '-p helm-set-values="' + kata_to_helm_set_values + '"' if kata_to_helm_set_values | default('') | length > 0 else '' }}
+
+    - name: Submit upgrade with verification pod override
+      ansible.builtin.include_tasks: ../tasks/submit_upgrade.yaml
+      vars:
+        target_version: "{{ kata_to_version }}"
+        node_selector: "katacontainers.io/kata-lifecycle-manager-window=true"
+        extra_submit_args: "{{ _tc07_extra_args }}"
+
+    - name: Wait for workflow to finish
+      ansible.builtin.include_tasks: ../tasks/wait_workflow.yaml
+
+    - name: Assert workflow succeeded
+      ansible.builtin.include_tasks: ../tasks/assertions/workflow_status.yaml
+      vars:
+        expected_status: Succeeded
+
+    - name: Assert node annotation status is completed
+      ansible.builtin.include_tasks: ../tasks/assertions/node_annotation.yaml
+      vars:
+        node_name: "{{ worker_node_a }}"
+        annotation_key: "katacontainers.io/kata-lifecycle-manager-status"
+        expected_value: completed
+
+    - name: Record kata binary version after upgrade
+      ansible.builtin.include_tasks: ../tasks/assertions/kata_binary_version.yaml
+      vars:
+        node_name: "{{ worker_node_a }}"
+        version_fact_name: "_kata_version_after"
+        version_label: "after upgrade"
+
+    - name: Assert kata binary version changed
+      ansible.builtin.assert:
+        that:
+          - _kata_version_before != _kata_version_after
+        fail_msg: >-
+          kata-runtime version did not change:
+          before='{{ _kata_version_before }}', after='{{ _kata_version_after }}'
+        success_msg: >-
+          kata-runtime version changed:
+          before='{{ _kata_version_before }}', after='{{ _kata_version_after }}'
+
+    - name: Check no leftover verification pod exists
+      ansible.builtin.shell:
+        cmd: kubectl get pods -n default --no-headers | grep kata-verify || true
+      register: leftover_verify_pods
+      changed_when: false
+
+    - name: Assert no verification pod remains
+      ansible.builtin.assert:
+        that:
+          - leftover_verify_pods.stdout | length == 0
+        fail_msg: "Leftover verification pod(s) found: {{ leftover_verify_pods.stdout }}"
+        success_msg: "No leftover verification pods in default namespace"

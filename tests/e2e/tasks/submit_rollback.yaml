@@ -1,0 +1,19 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Submit a manual rollback workflow via argo CLI.
+#
+# Required vars:
+#   node_name      - node to roll back
+#   target_version - the version that was upgraded to (needed by workflow params)
+---
+- name: Submit rollback workflow for {{ node_name }}
+  ansible.builtin.shell:
+    cmd: >-
+      argo submit -n {{ argo_namespace }}
+      --from workflowtemplate/kata-lifecycle-manager
+      --entrypoint rollback-node
+      -p target-version={{ target_version }}
+      -p node-name={{ node_name }}
+  register: rollback_submit_result
+  changed_when: rollback_submit_result.rc == 0

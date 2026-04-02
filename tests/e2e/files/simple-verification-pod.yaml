@@ -1,0 +1,27 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Simple verification pod that outputs environment info.
+# Used by TC-07 to test verification pod override + placeholder substitution.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${TEST_POD}
+spec:
+  runtimeClassName: kata-qemu
+  restartPolicy: Never
+  nodeSelector:
+    kubernetes.io/hostname: ${NODE}
+  tolerations:
+    - operator: Exists
+  containers:
+    - name: verify
+      image: quay.io/kata-containers/alpine-bash-curl:latest
+      command:
+        - sh
+        - -c
+        - |
+          echo "=== Kata Verification ==="
+          echo "Node: $(hostname)"
+          echo "Kernel: $(uname -r)"
+          echo "SUCCESS: Pod running with Kata runtime"

@@ -1,0 +1,74 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# TC-06: Custom Image Upgrade
+# Submits an upgrade with explicit helm-set-values for image override,
+# verifying that custom image parameters are applied correctly.
+---
+- name: "TC-06: Custom Image Upgrade"
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Reset environment
+      ansible.builtin.include_tasks: ../tasks/reset_environment.yaml
+
+    - name: Label worker node A for upgrade
+      ansible.builtin.command:
+        cmd: >-
+          kubectl label node {{ worker_node_a }}
+          katacontainers.io/kata-lifecycle-manager-window=true
+          --overwrite
+
+    - name: Record kata binary version before upgrade
+      ansible.builtin.include_tasks: ../tasks/assertions/kata_binary_version.yaml
+      vars:
+        node_name: "{{ worker_node_a }}"
+        version_fact_name: "_kata_version_before"
+        version_label: "before upgrade"
+
+    - name: Submit upgrade with explicit helm-set-values
+      ansible.builtin.include_tasks: ../tasks/submit_upgrade.yaml
+      vars:
+        target_version: "{{ kata_to_version }}"
+        node_selector: "katacontainers.io/kata-lifecycle-manager-window=true"
+        extra_submit_args: >-
+          -p helm-set-values="image.reference={{ kata_to_image | regex_replace(':[^:]+$', '') }},image.tag={{ kata_to_image.split(':')[-1] }}"
+
+    - name: Wait for workflow to finish
+      ansible.builtin.include_tasks: ../tasks/wait_workflow.yaml
+
+    - name: Assert workflow succeeded
+      ansible.builtin.include_tasks: ../tasks/assertions/workflow_status.yaml
+      vars:
+        expected_status: Succeeded
+
+    - name: Assert kata-deploy image contains target version
+      ansible.builtin.include_tasks: ../tasks/assertions/kata_deploy_image.yaml
+      vars:
+        node_name: "{{ worker_node_a }}"
+        expected_image: "{{ kata_to_image.split(':')[-1] }}"
+
+    - name: Record kata binary version after upgrade
+      ansible.builtin.include_tasks: ../tasks/assertions/kata_binary_version.yaml
+      vars:
+        node_name: "{{ worker_node_a }}"
+        version_fact_name: "_kata_version_after"
+        version_label: "after upgrade"
+
+    - name: Assert kata binary version changed
+      ansible.builtin.assert:
+        that:
+          - _kata_version_before != _kata_version_after
+        fail_msg: >-
+          kata-runtime version did not change:
+          before='{{ _kata_version_before }}', after='{{ _kata_version_after }}'
+        success_msg: >-
+          kata-runtime version changed:
+          before='{{ _kata_version_before }}', after='{{ _kata_version_after }}'
+
+    - name: Assert node annotation status is completed
+      ansible.builtin.include_tasks: ../tasks/assertions/node_annotation.yaml
+      vars:
+        node_name: "{{ worker_node_a }}"
+        annotation_key: "katacontainers.io/kata-lifecycle-manager-status"
+        expected_value: completed

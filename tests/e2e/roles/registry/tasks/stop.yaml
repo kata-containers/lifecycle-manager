@@ -1,0 +1,8 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Stop and remove local registry container
+  ansible.builtin.command:
+    cmd: podman rm -f -v {{ registry_container_name }}
+  changed_when: true
+  failed_when: false

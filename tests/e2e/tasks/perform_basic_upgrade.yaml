@@ -1,0 +1,29 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Reusable sequence: label a node, submit upgrade, wait for completion.
+# Used by TC-03 (needs upgrade before testing rollback) and TC-10 (re-upgrade).
+#
+# Required vars:
+#   upgrade_node          - node to label and upgrade
+#   upgrade_target_version - target version
+#
+# Optional vars:
+#   upgrade_extra_args    - additional -p flags
+---
+- name: Label {{ upgrade_node }} for upgrade
+  ansible.builtin.command:
+    cmd: >-
+      kubectl label node {{ upgrade_node }}
+      katacontainers.io/kata-lifecycle-manager-window=true
+      --overwrite
+
+- name: Submit upgrade workflow to {{ upgrade_target_version }}
+  ansible.builtin.include_tasks: "{{ playbook_dir }}/../tasks/submit_upgrade.yaml"
+  vars:
+    target_version: "{{ upgrade_target_version }}"
+    node_selector: "katacontainers.io/kata-lifecycle-manager-window=true"
+    extra_submit_args: "{{ upgrade_extra_args | default('') }}"
+
+- name: Wait for upgrade workflow to finish
+  ansible.builtin.include_tasks: "{{ playbook_dir }}/../tasks/wait_workflow.yaml"

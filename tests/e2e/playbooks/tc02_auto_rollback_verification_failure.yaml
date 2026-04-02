@@ -1,0 +1,104 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# TC-02: Auto-Rollback on Verification Failure
+#
+# Submits an upgrade with a verification pod that always fails (exit 1).
+# The workflow should detect the failure, trigger an automatic helm rollback,
+# mark the node annotation as rolled-back, and leave the node schedulable.
+---
+- name: "TC-02: Auto-Rollback on Verification Failure"
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Reset environment
+      ansible.builtin.include_tasks: ../tasks/reset_environment.yaml
+
+    - name: Label worker_node_a for upgrade window
+      ansible.builtin.command:
+        cmd: >-
+          kubectl label node {{ worker_node_a }}
+          katacontainers.io/kata-lifecycle-manager-window=true
+          --overwrite
+
+    - name: Record kata binary version before upgrade
+      ansible.builtin.include_tasks: ../tasks/assertions/kata_binary_version.yaml
+      vars:
+        node_name: "{{ worker_node_a }}"
+        version_fact_name: "_kata_version_before"
+        version_label: "before upgrade"
+
+    - name: Base64-encode the failing verification pod
+      ansible.builtin.shell:
+        cmd: base64 -w0 {{ playbook_dir }}/../files/failing-verification-pod.yaml
+      register: _failing_pod_b64
+      changed_when: false
+
+    - name: Build extra submit args with failing verification pod
+      ansible.builtin.set_fact:
+        _tc02_extra_args: >-
+          -p verification-pod="{{ _failing_pod_b64.stdout }}"
+          {{ '-p helm-set-values="' + kata_to_helm_set_values + '"'
+             if kata_to_helm_set_values | default('') | length > 0
+             else '' }}
+
+    - name: Submit upgrade workflow with failing verification
+      ansible.builtin.include_tasks: ../tasks/submit_upgrade.yaml
+      vars:
+        target_version: "{{ kata_to_version }}"
+        node_selector: "katacontainers.io/kata-lifecycle-manager-window=true"
+        extra_submit_args: "{{ _tc02_extra_args }}"
+
+    - name: Wait for workflow to finish
+      ansible.builtin.include_tasks: ../tasks/wait_workflow.yaml
+
+    - name: Assert workflow failed
+      ansible.builtin.include_tasks: ../tasks/assertions/workflow_status.yaml
+      vars:
+        expected_status: "Failed"
+
+    - name: Assert helm rollback occurred
+      ansible.builtin.include_tasks: ../tasks/assertions/helm_rollback_occurred.yaml
+
+    - name: Determine expected reverted kata-deploy image
+      ansible.builtin.set_fact:
+        _tc02_expected_image: >-
+          {{ kata_from_image
+             if kata_from_image | default('') | length > 0
+             else kata_from_version }}
+
+    - name: Assert kata-deploy image reverted on worker_node_a
+      ansible.builtin.include_tasks: ../tasks/assertions/kata_deploy_image.yaml
+      vars:
+        node_name: "{{ worker_node_a }}"
+        expected_image: "{{ _tc02_expected_image }}"
+
+    - name: Assert node annotation status is rolled-back
+      ansible.builtin.include_tasks: ../tasks/assertions/node_annotation.yaml
+      vars:
+        node_name: "{{ worker_node_a }}"
+        annotation_key: "katacontainers.io/kata-lifecycle-manager-status"
+        expected_value: "rolled-back"
+
+    - name: Record kata binary version after rollback
+      ansible.builtin.include_tasks: ../tasks/assertions/kata_binary_version.yaml
+      vars:
+        node_name: "{{ worker_node_a }}"
+        version_fact_name: "_kata_version_after"
+        version_label: "after rollback"
+
+    - name: Assert kata binary version unchanged after rollback
+      ansible.builtin.assert:
+        that:
+          - _kata_version_before == _kata_version_after
+        fail_msg: >-
+          kata-runtime version changed after rollback:
+          before='{{ _kata_version_before }}', after='{{ _kata_version_after }}'
+        success_msg: >-
+          kata-runtime version unchanged after rollback:
+          before='{{ _kata_version_before }}', after='{{ _kata_version_after }}'
+
+    - name: Assert worker_node_a is schedulable
+      ansible.builtin.include_tasks: ../tasks/assertions/node_schedulable.yaml
+      vars:
+        node_name: "{{ worker_node_a }}"

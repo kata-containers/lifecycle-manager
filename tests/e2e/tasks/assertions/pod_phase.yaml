@@ -1,0 +1,20 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Assert a pod is in the expected phase.
+# Required vars: pod_name, pod_namespace, expected_phase
+---
+- name: Get phase of pod {{ pod_name }}
+  ansible.builtin.command:
+    cmd: >-
+      kubectl get pod {{ pod_name }} -n {{ pod_namespace }}
+      -o jsonpath='{.status.phase}'
+  register: _pod_phase
+  changed_when: false
+
+- name: Assert pod {{ pod_name }} is {{ expected_phase }}
+  ansible.builtin.assert:
+    that:
+      - _pod_phase.stdout == expected_phase
+    fail_msg: "Pod {{ pod_name }} phase is '{{ _pod_phase.stdout }}', expected '{{ expected_phase }}'"
+    success_msg: "Pod {{ pod_name }} is '{{ expected_phase }}'"

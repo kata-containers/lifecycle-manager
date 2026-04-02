@@ -1,0 +1,171 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Configure containerd on every cluster VM to mirror upstream registries
+# through the host-local registry. This makes kata-deploy image pulls
+# (~5 GB each) nearly instant for the VMs.
+#
+# Uses the same approach as kcli's own containerd.sh:
+#   1. sed config_path into /etc/containerd/config.toml
+#   2. Drop hosts.toml files into /etc/containerd/certs.d/<registry>/
+---
+- name: Build list of cluster VM names
+  ansible.builtin.set_fact:
+    _cluster_vms: >-
+      {{
+        (range(0, cluster_ctlplanes | int)
+          | map('string')
+          | map('regex_replace', '^(.+)$', cluster_name ~ '-ctlplane-\1')
+          | list)
+        +
+        (range(0, cluster_workers | int)
+          | map('string')
+          | map('regex_replace', '^(.+)$', cluster_name ~ '-worker-\1')
+          | list)
+      }}
+
+- name: Display target VMs
+  ansible.builtin.debug:
+    msg: "Configuring containerd mirrors on: {{ _cluster_vms }}"
+
+- name: Write hosts.toml files locally
+  ansible.builtin.copy:
+    content: |
+      server = "https://{{ item }}"
+
+      [host."http://{{ registry_host }}:{{ registry_port }}"]
+        capabilities = ["pull", "resolve"]
+        skip_verify = true
+    dest: "/tmp/containerd-mirror-{{ item | replace('.', '-') }}.toml"
+    mode: "0644"
+  loop: "{{ _mirror_registries }}"
+
+- name: Deploy hosts.toml and enable config_path on each VM
+  ansible.builtin.shell: |
+    set -euo pipefail
+    VM="{{ item.0 }}"
+    REG="{{ item.1 }}"
+    LOCAL="/tmp/containerd-mirror-{{ item.1 | replace('.', '-') }}.toml"
+
+    kcli ssh "${VM}" "sudo mkdir -p /etc/containerd/certs.d/${REG}"
+    kcli scp "${LOCAL}" "${VM}:/tmp/hosts.toml"
+    kcli ssh "${VM}" "sudo mv /tmp/hosts.toml /etc/containerd/certs.d/${REG}/hosts.toml"
+  args:
+    executable: /bin/bash
+  loop: "{{ _cluster_vms | product(_mirror_registries) | list }}"
+  loop_control:
+    label: "{{ item.0 }} -> {{ item.1 }}"
+  changed_when: true
+
+- name: Write containerd config patch script locally
+  ansible.builtin.copy:
+    content: |
+      #!/bin/bash
+      sed -i 's%config_path = .*%config_path = "/etc/containerd/certs.d"%' /etc/containerd/config.toml
+    dest: /tmp/patch-containerd-config.sh
+    mode: "0755"
+
+- name: Deploy and run config patch on each VM
+  ansible.builtin.shell: |
+    set -euo pipefail
+    kcli scp /tmp/patch-containerd-config.sh {{ item }}:/tmp/patch-containerd-config.sh
+    kcli ssh {{ item }} "sudo bash /tmp/patch-containerd-config.sh"
+  args:
+    executable: /bin/bash
+  loop: "{{ _cluster_vms }}"
+  changed_when: true
+
+- name: Dump containerd config.toml (registry section) for debugging
+  ansible.builtin.shell: |
+    kcli ssh {{ item }} "sudo grep -A5 config_path /etc/containerd/config.toml || true"
+  loop: "{{ _cluster_vms }}"
+  register: _config_dump
+  changed_when: false
+
+- name: Show containerd config.toml snippets
+  ansible.builtin.debug:
+    msg: "{{ item.item }}: {{ item.stdout }}"
+  loop: "{{ _config_dump.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Dump hosts.toml drop-ins for debugging
+  ansible.builtin.shell: |
+    kcli ssh {{ item.0 }} "sudo find /etc/containerd/certs.d/ -name hosts.toml -exec echo '--- {} ---' \; -exec cat {} \; 2>/dev/null || true"
+  args:
+    executable: /bin/bash
+  loop: "{{ _cluster_vms | product(_mirror_registries) | list }}"
+  loop_control:
+    label: "{{ item.0 }}"
+  register: _dropin_dump
+  changed_when: false
+
+- name: Show hosts.toml drop-in contents
+  ansible.builtin.debug:
+    msg: "{{ item.item[0] }}: {{ item.stdout }}"
+  loop: "{{ _dropin_dump.results }}"
+  loop_control:
+    label: "{{ item.item[0] }}"
+
+- name: Record timestamp before restart
+  ansible.builtin.set_fact:
+    _restart_ts: "{{ lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%S') }}"
+
+- name: Validate containerd config before restart
+  ansible.builtin.shell: |
+    kcli ssh {{ item }} "sudo containerd config dump > /dev/null 2>&1 && echo CONFIG_OK || { echo CONFIG_INVALID; sudo containerd config dump 2>&1 || true; }"
+  loop: "{{ _cluster_vms }}"
+  register: _config_validate
+  changed_when: false
+
+- name: Show config validation results
+  ansible.builtin.debug:
+    msg: "{{ item.item }}: {{ item.stdout }}"
+  loop: "{{ _config_validate.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Restart containerd and capture journal on failure
+  block:
+    - name: Restart containerd on each VM
+      ansible.builtin.command:
+        cmd: kcli ssh {{ item }} "sudo systemctl restart containerd"
+      loop: "{{ _cluster_vms }}"
+      changed_when: true
+  rescue:
+    - name: Collect containerd journal since restart attempt
+      ansible.builtin.shell: |
+        kcli ssh {{ item }} "sudo journalctl -xeu containerd.service --no-pager --since '{{ _restart_ts }}' 2>&1 || true"
+      loop: "{{ _cluster_vms }}"
+      register: _journal
+      changed_when: false
+
+    - name: Show containerd journal
+      ansible.builtin.debug:
+        msg: "{{ item.item }}: {{ item.stdout }}"
+      loop: "{{ _journal.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Collect containerd startup error
+      ansible.builtin.shell: |
+        kcli ssh {{ item }} "sudo containerd config dump 2>&1; echo '---'; sudo containerd 2>&1 & sleep 2; kill %1 2>/dev/null; wait 2>/dev/null || true"
+      loop: "{{ _cluster_vms }}"
+      register: _startup_err
+      changed_when: false
+
+    - name: Show containerd startup error
+      ansible.builtin.debug:
+        msg: "{{ item.item }}: {{ item.stdout }}"
+      loop: "{{ _startup_err.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Fail after dumping diagnostics
+      ansible.builtin.fail:
+        msg: "containerd restart failed on one or more VMs -- see journal and startup output above"
+
+- name: Wait for all nodes to be Ready after containerd restart
+  ansible.builtin.command:
+    cmd: kubectl wait --for=condition=Ready node --all --timeout=120s
+  changed_when: false

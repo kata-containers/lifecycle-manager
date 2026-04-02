@@ -1,0 +1,23 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Assert that the latest helm revision is a rollback.
+---
+- name: Get helm history
+  ansible.builtin.shell:
+    cmd: >-
+      helm history {{ helm_release }} -n {{ helm_namespace }}
+      -o json
+  register: _helm_history
+  changed_when: false
+
+- name: Parse latest revision description
+  ansible.builtin.set_fact:
+    _latest_description: "{{ (_helm_history.stdout | from_json | last).description }}"
+
+- name: Assert latest revision is a rollback
+  ansible.builtin.assert:
+    that:
+      - "'Rollback' in _latest_description"
+    fail_msg: "Latest revision description is '{{ _latest_description }}', expected to contain 'Rollback'"
+    success_msg: "Latest revision is a rollback: '{{ _latest_description }}'"

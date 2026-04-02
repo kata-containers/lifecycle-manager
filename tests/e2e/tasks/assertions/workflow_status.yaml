@@ -1,0 +1,66 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Assert that the latest argo workflow has the expected status.
+# Required vars: expected_status (e.g. "Succeeded", "Failed")
+---
+- name: Get latest workflow status
+  ansible.builtin.command:
+    cmd: argo get @latest -n {{ argo_namespace }} -o json
+  register: _wf_json
+  changed_when: false
+
+- name: Parse workflow phase
+  ansible.builtin.set_fact:
+    _wf_phase: "{{ (_wf_json.stdout | from_json).status.phase }}"
+
+- name: Dump workflow details on unexpected status
+  when: _wf_phase != expected_status
+  block:
+    - name: Get workflow details (human-readable)
+      ansible.builtin.shell: |
+        argo get @latest -n {{ argo_namespace }} 2>&1 || true
+      register: _wf_details
+      changed_when: false
+
+    - name: Show workflow details
+      ansible.builtin.debug:
+        msg: "{{ _wf_details.stdout }}"
+
+    - name: Get workflow logs
+      ansible.builtin.shell: |
+        argo logs @latest -n {{ argo_namespace }} 2>&1 | tail -300 || true
+      register: _wf_logs
+      changed_when: false
+
+    - name: Show workflow logs
+      ansible.builtin.debug:
+        msg: "{{ _wf_logs.stdout }}"
+
+    - name: Get workflow events
+      ansible.builtin.shell: |
+        WF_NAME=$(argo list -n {{ argo_namespace }} -o name 2>/dev/null | head -1)
+        kubectl get events -n {{ argo_namespace }} --field-selector involvedObject.name="${WF_NAME}" --sort-by='.lastTimestamp' 2>&1 || true
+      register: _wf_events
+      changed_when: false
+
+    - name: Show workflow events
+      ansible.builtin.debug:
+        msg: "{{ _wf_events.stdout }}"
+
+    - name: Get kata-deploy pods status
+      ansible.builtin.shell: |
+        kubectl get pods -n kube-system -l name=kata-deploy -o wide 2>&1 || true
+      register: _kata_pods
+      changed_when: false
+
+    - name: Show kata-deploy pods
+      ansible.builtin.debug:
+        msg: "{{ _kata_pods.stdout }}"
+
+- name: Assert workflow status is {{ expected_status }}
+  ansible.builtin.assert:
+    that:
+      - _wf_phase == expected_status
+    fail_msg: "Workflow status was '{{ _wf_phase }}', expected '{{ expected_status }}'"
+    success_msg: "Workflow status is '{{ expected_status }}'"
