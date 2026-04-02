@@ -60,7 +60,7 @@ spec:
         description: "Timeout for node drain"
       - name: helm-set-values
         value: {{ .Values.defaults.helmSetValues | quote }}
-        description: "Extra --set values for helm upgrade (comma-separated key=value pairs, e.g. image.repository=myregistry/kata-deploy,image.tag=mytag)"
+        description: "Extra --set values for helm upgrade (comma-separated key=value pairs, e.g. image.reference=myregistry/kata-deploy,image.tag=mytag)"
 
   templates:
     # =========================================================================
