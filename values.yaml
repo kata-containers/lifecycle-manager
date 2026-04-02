@@ -59,10 +59,10 @@ defaults:
   # Use this to override the kata-deploy container image or any chart value.
   #
   # Example: deploy from a custom registry:
-  #   --set defaults.helmSetValues="image.repository=myregistry.io/kata-deploy\,image.tag=my-custom-tag"
+  #   --set defaults.helmSetValues="image.reference=myregistry.io/kata-deploy\,image.tag=my-custom-tag"
   #
   # Or override at workflow submission:
-  #   argo submit ... -p helm-set-values="image.repository=myregistry.io/kata-deploy,image.tag=my-custom-tag"
+  #   argo submit ... -p helm-set-values="image.reference=myregistry.io/kata-deploy,image.tag=my-custom-tag"
   helmSetValues: ""
 
 # Container image used by all workflow steps (Helm 4 + kubectl)
