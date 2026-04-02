@@ -1,0 +1,10 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# All operations run on localhost via kubectl/helm/argo CLI
+# against a remote Kubernetes cluster (kubeconfig-based).
+all:
+  hosts:
+    localhost:
+      ansible_connection: local
+      ansible_python_interpreter: "{{ ansible_playbook_python }}"

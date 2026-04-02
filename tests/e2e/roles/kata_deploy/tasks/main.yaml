@@ -1,0 +1,33 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Derive helm --set values from kata_from_image
+  ansible.builtin.set_fact:
+    kata_from_helm_set_values: >-
+      --set image.reference={{ kata_from_image | regex_replace(':[^:]+$', '') }}
+      --set image.tag={{ kata_from_image.split(':')[-1] }}
+  when: kata_from_image | length > 0
+
+- name: Set empty from helm values when no image override
+  ansible.builtin.set_fact:
+    kata_from_helm_set_values: ""
+  when: kata_from_image | length == 0
+
+- name: Install kata-deploy {{ kata_from_version }}
+  ansible.builtin.shell:
+    cmd: >-
+      helm upgrade --install {{ helm_release }}
+      oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy
+      --version {{ kata_from_version }}
+      --namespace {{ helm_namespace }}
+      --create-namespace
+      {{ kata_from_helm_set_values }}
+  register: helm_install
+  changed_when: helm_install.rc == 0
+
+- name: Wait for kata-deploy DaemonSet to be ready
+  ansible.builtin.command:
+    cmd: >-
+      kubectl rollout status daemonset/kata-deploy
+      -n {{ helm_namespace }} --timeout={{ kata_deploy_ready_timeout }}s
+  changed_when: false

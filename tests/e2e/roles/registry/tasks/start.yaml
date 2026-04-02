@@ -1,0 +1,82 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Start a local container registry and pre-populate it with the
+# kata-deploy images used during the test run. The VMs pull these
+# large (~5 GB) images over the fast libvirt bridge instead of the
+# internet.
+---
+- name: Discover host IP on libvirt bridge
+  ansible.builtin.shell: |
+    ip -4 addr show virbr0 | grep -oP 'inet \K[\d.]+'
+  register: _virbr0_ip
+  changed_when: false
+
+- name: Set registry_host fact
+  ansible.builtin.set_fact:
+    registry_host: "{{ _virbr0_ip.stdout | trim }}"
+
+- name: Stop any leftover registry container
+  ansible.builtin.command:
+    cmd: podman rm -f -v {{ registry_container_name }}
+  changed_when: true
+  failed_when: false
+
+- name: Start local registry
+  ansible.builtin.command:
+    cmd: >-
+      podman run -d
+      --name {{ registry_container_name }}
+      -p {{ registry_port }}:5000
+      docker.io/library/registry:2
+  register: _registry_start
+  changed_when: _registry_start.rc == 0
+
+- name: Compute from-version image reference
+  ansible.builtin.set_fact:
+    _from_image: >-
+      {{ kata_from_image if (kata_from_image | length > 0)
+         else kata_deploy_default_repo ~ ':' ~ kata_from_version }}
+
+- name: Compute to-version image reference
+  ansible.builtin.set_fact:
+    _to_image: >-
+      {{ kata_to_image if (kata_to_image | length > 0)
+         else kata_deploy_default_repo ~ ':' ~ kata_to_version }}
+
+- name: Build deduplicated image cache list
+  ansible.builtin.set_fact:
+    _cache_images: "{{ [_from_image | trim, _to_image | trim] | unique }}"
+
+- name: Collect unique upstream registries
+  ansible.builtin.set_fact:
+    _mirror_registries: >-
+      {{ _cache_images
+         | map('regex_replace', '^([^/]+)/.*$', '\1')
+         | unique | list }}
+
+- name: Display images to cache
+  ansible.builtin.debug:
+    msg: "Caching {{ _cache_images | length }} image(s) via {{ registry_host }}:{{ registry_port }}: {{ _cache_images }}"
+
+- name: Pull, re-tag, and push each image to the local registry
+  ansible.builtin.shell: |
+    set -euo pipefail
+    IMAGE="{{ item }}"
+    REGISTRY="${IMAGE%%/*}"
+    REPO_TAG="${IMAGE#${REGISTRY}/}"
+    LOCAL_TAG="localhost:{{ registry_port }}/${REPO_TAG}"
+
+    echo "Pulling ${IMAGE} ..."
+    podman pull "${IMAGE}"
+
+    echo "Tagging as ${LOCAL_TAG} ..."
+    podman tag "${IMAGE}" "${LOCAL_TAG}"
+
+    echo "Pushing to local registry ..."
+    podman push --tls-verify=false "${LOCAL_TAG}"
+  args:
+    executable: /bin/bash
+  loop: "{{ _cache_images }}"
+  register: _image_push
+  changed_when: true

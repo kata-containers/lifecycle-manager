@@ -1,0 +1,72 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Wait for the latest argo workflow to complete (succeed or fail).
+# On timeout or failure, dump the workflow status and logs for debugging.
+---
+- name: Wait for workflow to finish
+  block:
+    - name: Wait for workflow to finish
+      ansible.builtin.command:
+        cmd: argo wait @latest -n {{ argo_namespace }}
+      register: workflow_wait_result
+      changed_when: false
+      timeout: "{{ workflow_timeout }}"
+
+  rescue:
+    - name: Dump workflow list
+      ansible.builtin.shell: |
+        argo list -n {{ argo_namespace }} 2>&1 || true
+      register: _wf_list
+      changed_when: false
+
+    - name: Show workflow list
+      ansible.builtin.debug:
+        msg: "{{ _wf_list.stdout }}"
+
+    - name: Get latest workflow name
+      ansible.builtin.shell: |
+        argo list -n {{ argo_namespace }} -o name 2>/dev/null | head -1
+      register: _wf_name
+      changed_when: false
+
+    - name: Dump workflow details
+      ansible.builtin.shell: |
+        argo get {{ _wf_name.stdout | trim }} -n {{ argo_namespace }} 2>&1 || true
+      register: _wf_details
+      changed_when: false
+      when: _wf_name.stdout | trim | length > 0
+
+    - name: Show workflow details
+      ansible.builtin.debug:
+        msg: "{{ _wf_details.stdout }}"
+      when: _wf_details is defined and _wf_details.stdout is defined
+
+    - name: Dump workflow logs
+      ansible.builtin.shell: |
+        argo logs {{ _wf_name.stdout | trim }} -n {{ argo_namespace }} 2>&1 | tail -200 || true
+      register: _wf_logs
+      changed_when: false
+      when: _wf_name.stdout | trim | length > 0
+
+    - name: Show workflow logs
+      ansible.builtin.debug:
+        msg: "{{ _wf_logs.stdout }}"
+      when: _wf_logs is defined and _wf_logs.stdout is defined
+
+    - name: Dump kata-deploy pods status
+      ansible.builtin.shell: |
+        kubectl get pods -n kube-system -l name=kata-deploy -o wide 2>&1 || true
+      register: _kata_pods
+      changed_when: false
+
+    - name: Show kata-deploy pods
+      ansible.builtin.debug:
+        msg: "{{ _kata_pods.stdout }}"
+
+    - name: Set workflow_wait_result for downstream tasks
+      ansible.builtin.set_fact:
+        workflow_wait_result:
+          rc: 1
+          stdout: "workflow timed out or failed -- see diagnostics above"
+          stderr: ""

@@ -1,0 +1,31 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Resolve verification pod path for {{ kata_runtime_class }}
+  ansible.builtin.set_fact:
+    _verification_pod_path: "{{ playbook_dir }}/../files/verification-pods/{{ kata_runtime_class }}.yaml"
+
+- name: Derive helm-set-values from target image
+  ansible.builtin.set_fact:
+    kata_to_helm_set_values: >-
+      image.reference={{ kata_to_image | regex_replace(':[^:]+$', '') }},image.tag={{ kata_to_image.split(':')[-1] }}
+  when: kata_to_image | length > 0
+
+- name: Set empty target helm values when no image override
+  ansible.builtin.set_fact:
+    kata_to_helm_set_values: ""
+  when: kata_to_image | length == 0
+
+- name: Install kata-lifecycle-manager from local chart
+  ansible.builtin.shell:
+    cmd: >-
+      helm upgrade --install kata-lifecycle-manager
+      {{ lifecycle_manager_chart_path }}
+      --namespace {{ argo_namespace }}
+      --set-file defaults.verificationPod={{ _verification_pod_path }}
+      --set defaults.drainEnabled=false
+      --set defaults.helmSetValues=""
+  args:
+    chdir: "{{ playbook_dir }}/../../.."
+  register: lm_install
+  changed_when: lm_install.rc == 0

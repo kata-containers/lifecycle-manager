@@ -1,0 +1,66 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# E2E test configuration. Override any variable via --extra-vars.
+
+# -- Cluster (kcli) --
+cluster_name: kata-lifecycle-test
+cluster_ctlplanes: 1
+cluster_workers: 2
+cluster_image: ubuntu2604
+cluster_memory: 32768
+cluster_cpus: 8
+cluster_disk: 100
+
+# -- Kata Versions --
+# FROM = initial install version; TO = upgrade target.
+# Minimum supported: 3.27.0 (lifecycle-manager requirement).
+kata_from_version: "3.27.0"
+kata_to_version: "3.27.0"
+
+# Image overrides for CI builds.
+# Empty string = use default chart image for that version.
+kata_from_image: ""
+kata_to_image: "quay.io/kata-containers/kata-deploy-ci:kata-containers-latest"
+
+# -- Runtime class (set per iteration by run_tests.sh) --
+kata_runtime_class: "kata-qemu"
+
+# -- Argo Workflows --
+argo_version: "v3.6.4"
+argo_namespace: "argo"
+
+# -- Helm --
+helm_release: "kata-deploy"
+helm_namespace: "kube-system"
+
+# -- Lifecycle manager chart --
+# Path to local chart (relative to repository root).
+lifecycle_manager_chart_path: "."
+
+# -- Timeouts (seconds unless noted) --
+cluster_create_timeout: 1200
+kata_deploy_ready_timeout: 300
+workflow_timeout: 900
+verification_timeout: 180
+
+# -- Log Rotation --
+results_base_dir: "/var/lib/kata-e2e/results"
+results_max_runs: 10
+results_max_age_days: 30
+results_max_total_mb: 2048
+
+# -- Local Registry (ephemeral per-run image cache) --
+registry_port: 5000
+registry_container_name: kata-e2e-registry
+kata_deploy_default_repo: "quay.io/kata-containers/kata-deploy"
+
+# -- Derived (populated at runtime by setup/reset tasks) --
+registry_host: ""
+worker_node_a: ""
+worker_node_b: ""
+control_plane_node: ""
+kata_to_helm_set_values: ""
+kata_from_helm_set_values: ""
+skip_cluster_create: false
+skip_cluster_delete: false

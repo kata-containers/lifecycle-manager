@@ -1,0 +1,326 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# E2E tests for kata-lifecycle-manager.
+# Runs on self-hosted runners with nested-virt support via kcli.
+
+name: E2E Tests
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      from_version:
+        description: "Kata Containers FROM version (initial install)"
+        required: false
+        default: "3.27.0"
+      to_version:
+        description: "Kata Containers TO version (upgrade target)"
+        required: false
+        default: "3.27.0"
+      to_image:
+        description: "Override upgrade image (empty = default for version)"
+        required: false
+        default: "quay.io/kata-containers/kata-deploy-ci:kata-containers-latest"
+
+concurrency:
+  group: e2e-tests
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    runs-on: kata-non-coco-x64
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [kata-qemu]
+        # TODO: add kata-qemu-coco-dev once kata-deploy >=3.29.0 ships
+        # the nydus snapshotter required by that runtime class.
+    timeout-minutes: 180
+    env:
+      RUNTIME: ${{ matrix.runtime }}
+      FROM_VERSION: ${{ github.event.inputs.from_version || '3.27.0' }}
+      TO_VERSION: ${{ github.event.inputs.to_version || '3.27.0' }}
+      TO_IMAGE: ${{ github.event.inputs.to_image || 'quay.io/kata-containers/kata-deploy-ci:kata-containers-latest' }}
+      RESULTS_DIR: ${{ github.workspace }}/results-${{ matrix.runtime }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Verify dependencies
+        run: |
+          for cmd in kcli kubectl helm argo ansible-playbook; do
+            command -v "$cmd" || { echo "MISSING: $cmd"; exit 1; }
+          done
+
+      - name: Setup cluster and prerequisites
+        working-directory: tests/e2e
+        run: |
+          ./run_tests.sh \
+            --runtime "$RUNTIME" \
+            --setup-only \
+            --from-version "$FROM_VERSION" \
+            --to-version "$TO_VERSION" \
+            --to-image "$TO_IMAGE" \
+            --results-dir "$RESULTS_DIR"
+
+      - name: "TC-01: Basic Upgrade"
+        if: success() || failure()
+        continue-on-error: true
+        working-directory: tests/e2e
+        run: |
+          ./run_tests.sh \
+            --runtime "$RUNTIME" --tc 1 --skip-setup --skip-cluster-delete \
+            --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
+            --to-image "$TO_IMAGE" --results-dir "$RESULTS_DIR"
+
+      - name: "TC-02: Auto-Rollback Verification Failure"
+        if: success() || failure()
+        continue-on-error: true
+        working-directory: tests/e2e
+        run: |
+          ./run_tests.sh \
+            --runtime "$RUNTIME" --tc 2 --skip-setup --skip-cluster-delete \
+            --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
+            --to-image "$TO_IMAGE" --results-dir "$RESULTS_DIR"
+
+      - name: "TC-03: Manual Rollback"
+        if: success() || failure()
+        continue-on-error: true
+        working-directory: tests/e2e
+        run: |
+          ./run_tests.sh \
+            --runtime "$RUNTIME" --tc 3 --skip-setup --skip-cluster-delete \
+            --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
+            --to-image "$TO_IMAGE" --results-dir "$RESULTS_DIR"
+
+      - name: "TC-04: Taint and Combined Selection"
+        if: success() || failure()
+        continue-on-error: true
+        working-directory: tests/e2e
+        run: |
+          ./run_tests.sh \
+            --runtime "$RUNTIME" --tc 4 --skip-setup --skip-cluster-delete \
+            --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
+            --to-image "$TO_IMAGE" --results-dir "$RESULTS_DIR"
+
+      - name: "TC-05: Upgrade with Drain"
+        if: success() || failure()
+        continue-on-error: true
+        working-directory: tests/e2e
+        run: |
+          ./run_tests.sh \
+            --runtime "$RUNTIME" --tc 5 --skip-setup --skip-cluster-delete \
+            --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
+            --to-image "$TO_IMAGE" --results-dir "$RESULTS_DIR"
+
+      - name: "TC-06: Custom Image Upgrade"
+        if: success() || failure()
+        continue-on-error: true
+        working-directory: tests/e2e
+        run: |
+          ./run_tests.sh \
+            --runtime "$RUNTIME" --tc 6 --skip-setup --skip-cluster-delete \
+            --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
+            --to-image "$TO_IMAGE" --results-dir "$RESULTS_DIR"
+
+      - name: "TC-07: Verification Pod Override"
+        if: success() || failure()
+        continue-on-error: true
+        working-directory: tests/e2e
+        run: |
+          ./run_tests.sh \
+            --runtime "$RUNTIME" --tc 7 --skip-setup --skip-cluster-delete \
+            --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
+            --to-image "$TO_IMAGE" --results-dir "$RESULTS_DIR"
+
+      - name: "TC-08: No Matching Nodes"
+        if: success() || failure()
+        continue-on-error: true
+        working-directory: tests/e2e
+        run: |
+          ./run_tests.sh \
+            --runtime "$RUNTIME" --tc 8 --skip-setup --skip-cluster-delete \
+            --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
+            --to-image "$TO_IMAGE" --results-dir "$RESULTS_DIR"
+
+      - name: "TC-09: Timeout Auto-Rollback"
+        if: success() || failure()
+        continue-on-error: true
+        working-directory: tests/e2e
+        run: |
+          ./run_tests.sh \
+            --runtime "$RUNTIME" --tc 9 --skip-setup --skip-cluster-delete \
+            --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
+            --to-image "$TO_IMAGE" --results-dir "$RESULTS_DIR"
+
+      - name: "TC-10: Same Version Re-upgrade (Idempotency)"
+        if: success() || failure()
+        continue-on-error: true
+        working-directory: tests/e2e
+        run: |
+          ./run_tests.sh \
+            --runtime "$RUNTIME" --tc 10 --skip-setup --skip-cluster-delete \
+            --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
+            --to-image "$TO_IMAGE" --results-dir "$RESULTS_DIR"
+
+      - name: "TC-11: No Workload Disruption"
+        if: success() || failure()
+        continue-on-error: true
+        working-directory: tests/e2e
+        run: |
+          ./run_tests.sh \
+            --runtime "$RUNTIME" --tc 11 --skip-setup --skip-cluster-delete \
+            --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
+            --to-image "$TO_IMAGE" --results-dir "$RESULTS_DIR"
+
+      - name: "TC-12: DaemonSet Target Node Only"
+        if: success() || failure()
+        continue-on-error: true
+        working-directory: tests/e2e
+        run: |
+          ./run_tests.sh \
+            --runtime "$RUNTIME" --tc 12 --skip-setup --skip-cluster-delete \
+            --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
+            --to-image "$TO_IMAGE" --results-dir "$RESULTS_DIR"
+
+      - name: "TC-13: Node-by-Node Sequential"
+        if: success() || failure()
+        continue-on-error: true
+        working-directory: tests/e2e
+        run: |
+          ./run_tests.sh \
+            --runtime "$RUNTIME" --tc 13 --skip-setup --skip-cluster-delete \
+            --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
+            --to-image "$TO_IMAGE" --results-dir "$RESULTS_DIR"
+
+      - name: "TC-14: Partial Failure Stops"
+        if: success() || failure()
+        continue-on-error: true
+        working-directory: tests/e2e
+        run: |
+          ./run_tests.sh \
+            --runtime "$RUNTIME" --tc 14 --skip-setup --skip-cluster-delete \
+            --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
+            --to-image "$TO_IMAGE" --results-dir "$RESULTS_DIR"
+
+      - name: "TC-15: Drain Multi-Node"
+        if: success() || failure()
+        continue-on-error: true
+        working-directory: tests/e2e
+        run: |
+          ./run_tests.sh \
+            --runtime "$RUNTIME" --tc 15 --skip-setup --skip-cluster-delete \
+            --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
+            --to-image "$TO_IMAGE" --results-dir "$RESULTS_DIR"
+
+      - name: Generate reports
+        if: always()
+        working-directory: tests/e2e
+        run: |
+          ./run_tests.sh \
+            --runtime "$RUNTIME" \
+            --reports-only \
+            --results-dir "$RESULTS_DIR"
+
+      - name: Teardown cluster (${{ matrix.runtime }})
+        if: always()
+        working-directory: tests/e2e
+        run: |
+          export KUBECONFIG="$HOME/.kcli/clusters/kata-e2e-${{ matrix.runtime }}/auth/kubeconfig"
+          ansible-playbook \
+            -e "cluster_name=kata-e2e-${{ matrix.runtime }}" \
+            playbooks/teardown.yaml 2>&1 || true
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: results-${{ matrix.runtime }}
+          path: results-${{ matrix.runtime }}/
+          retention-days: 30
+
+  cleanup:
+    runs-on: kata-non-coco-x64
+    needs: [e2e]
+    if: always()
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Rotate old results on disk
+        working-directory: tests/e2e
+        run: |
+          ./run_tests.sh --rotate-logs-only
+
+      - name: Prune journal logs
+        run: |
+          sudo journalctl --vacuum-time=7d --vacuum-size=1G 2>/dev/null || true
+
+  report:
+    runs-on: kata-non-coco-x64
+    needs: [e2e, cleanup]
+    if: always()
+    timeout-minutes: 10
+    steps:
+      - name: Download all results
+        uses: actions/download-artifact@v7
+        with:
+          path: all-results/
+
+      - name: Generate combined summary
+        run: |
+          echo "## E2E Test Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          for runtime_dir in all-results/results-*/; do
+            runtime=$(basename "$runtime_dir" | sed 's/results-//')
+            echo "### ${runtime}" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+
+            if [ -f "${runtime_dir}/summary.md" ]; then
+              cat "${runtime_dir}/summary.md" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "No results found." >> "$GITHUB_STEP_SUMMARY"
+            fi
+
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Publish JUnit results
+        uses: mikepenz/action-junit-report@v6
+        with:
+          report_paths: "all-results/results-*/junit.xml"
+          check_name: "E2E Test Results"
+          fail_on_failure: true
+
+      - name: Final verdict
+        run: |
+          TOTAL_FAILED=0
+          for results_file in all-results/results-*/results.json; do
+            if [ -f "$results_file" ]; then
+              FAILED=$(python3 -c "
+          import json
+          with open('${results_file}') as f:
+              print(sum(1 for r in json.load(f) if r['status'] == 'FAILED'))
+          " 2>/dev/null || echo "0")
+              TOTAL_FAILED=$((TOTAL_FAILED + FAILED))
+            fi
+          done
+
+          if [ "$TOTAL_FAILED" -gt 0 ]; then
+            echo "[FAIL] ${TOTAL_FAILED} test(s) failed across all runtimes"
+            exit 1
+          fi
+
+          if [ "${{ needs.e2e.result }}" != "success" ]; then
+            echo "[FAIL] E2E job did not succeed (result: ${{ needs.e2e.result }})"
+            exit 1
+          fi
+
+          echo "[PASS] All tests passed across all runtimes"

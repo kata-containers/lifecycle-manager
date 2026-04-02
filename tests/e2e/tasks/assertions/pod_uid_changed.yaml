@@ -1,0 +1,20 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Assert a pod UID HAS changed (pod was recreated).
+# Required vars: pod_name, pod_namespace, saved_uid
+---
+- name: Get current UID of pod {{ pod_name }}
+  ansible.builtin.command:
+    cmd: >-
+      kubectl get pod {{ pod_name }} -n {{ pod_namespace }}
+      -o jsonpath='{.metadata.uid}'
+  register: _current_uid
+  changed_when: false
+
+- name: Assert pod {{ pod_name }} UID has changed
+  ansible.builtin.assert:
+    that:
+      - _current_uid.stdout != saved_uid
+    fail_msg: "Pod UID is still '{{ saved_uid }}' (pod was NOT recreated)"
+    success_msg: "Pod UID changed from '{{ saved_uid }}' to '{{ _current_uid.stdout }}'"

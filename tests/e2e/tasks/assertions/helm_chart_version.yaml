@@ -1,0 +1,24 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Assert that the helm release is at the expected chart version.
+# Required vars: expected_chart_version
+---
+- name: Get helm release metadata
+  ansible.builtin.shell:
+    cmd: >-
+      helm get metadata {{ helm_release }} -n {{ helm_namespace }}
+      -o json
+  register: _helm_metadata
+  changed_when: false
+
+- name: Parse chart version
+  ansible.builtin.set_fact:
+    _chart_version: "{{ (_helm_metadata.stdout | from_json).version }}"
+
+- name: Assert chart version is {{ expected_chart_version }}
+  ansible.builtin.assert:
+    that:
+      - _chart_version == expected_chart_version
+    fail_msg: "Helm chart version is '{{ _chart_version }}', expected '{{ expected_chart_version }}'"
+    success_msg: "Helm chart version is '{{ expected_chart_version }}'"

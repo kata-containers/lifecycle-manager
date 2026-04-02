@@ -1,0 +1,30 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Assert that a node is schedulable (not cordoned).
+# Required vars: node_name
+# Optional vars: expect_schedulable (default true)
+---
+- name: Get unschedulable status of {{ node_name }}
+  ansible.builtin.command:
+    cmd: >-
+      kubectl get node {{ node_name }}
+      -o jsonpath='{.spec.unschedulable}'
+  register: _unschedulable_result
+  changed_when: false
+
+- name: Assert {{ node_name }} is schedulable
+  ansible.builtin.assert:
+    that:
+      - _unschedulable_result.stdout != 'true'
+    fail_msg: "Node {{ node_name }} is cordoned (unschedulable=true)"
+    success_msg: "Node {{ node_name }} is schedulable"
+  when: expect_schedulable | default(true) | bool
+
+- name: Assert {{ node_name }} is NOT schedulable
+  ansible.builtin.assert:
+    that:
+      - _unschedulable_result.stdout == 'true'
+    fail_msg: "Node {{ node_name }} is schedulable but expected cordoned"
+    success_msg: "Node {{ node_name }} is cordoned as expected"
+  when: not (expect_schedulable | default(true) | bool)

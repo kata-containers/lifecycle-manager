@@ -1,0 +1,44 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Create argo namespace
+  ansible.builtin.command:
+    cmd: kubectl create namespace {{ argo_namespace }}
+  register: ns_result
+  changed_when: ns_result.rc == 0
+  failed_when: ns_result.rc != 0 and 'already exists' not in ns_result.stderr
+
+- name: Install Argo Workflows {{ argo_version }}
+  ansible.builtin.command:
+    cmd: >-
+      kubectl apply -n {{ argo_namespace }}
+      -f https://github.com/argoproj/argo-workflows/releases/download/{{ argo_version }}/quick-start-minimal.yaml
+  register: argo_install
+  changed_when: "'created' in argo_install.stdout or 'configured' in argo_install.stdout"
+
+- name: Pin Argo deployments to control-plane node
+  ansible.builtin.command:
+    cmd: >-
+      kubectl patch deployment {{ item }} -n {{ argo_namespace }}
+      --type=strategic
+      -p '{"spec":{"template":{"spec":{
+        "nodeSelector":{"node-role.kubernetes.io/control-plane":""},
+        "tolerations":[{"key":"node-role.kubernetes.io/control-plane","operator":"Exists","effect":"NoSchedule"}]
+      }}}}'
+  loop:
+    - argo-server
+    - workflow-controller
+    - minio
+  register: _patch
+  changed_when: "'patched' in _patch.stdout"
+
+- name: Wait for Argo deployments to roll out on control-plane
+  ansible.builtin.command:
+    cmd: >-
+      kubectl rollout status deployment/{{ item }}
+      -n {{ argo_namespace }} --timeout=120s
+  loop:
+    - argo-server
+    - workflow-controller
+    - minio
+  changed_when: false

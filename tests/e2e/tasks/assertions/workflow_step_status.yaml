@@ -1,0 +1,30 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Assert that a specific workflow step template has the expected phase.
+# Required vars:
+#   step_template  - template name to look for (e.g. "drain-node")
+#   expected_phase - expected phase (e.g. "Succeeded", "Skipped", "Failed")
+---
+- name: Get latest workflow details
+  ansible.builtin.command:
+    cmd: argo get @latest -n {{ argo_namespace }} -o json
+  register: _wf_detail_json
+  changed_when: false
+
+- name: Find step {{ step_template }} phase
+  ansible.builtin.set_fact:
+    _step_phase: >-
+      {{ (_wf_detail_json.stdout | from_json).status.nodes.values()
+         | selectattr('templateName', 'defined')
+         | selectattr('templateName', 'eq', step_template)
+         | map(attribute='phase')
+         | first
+         | default('NotFound') }}
+
+- name: Assert step {{ step_template }} is {{ expected_phase }}
+  ansible.builtin.assert:
+    that:
+      - _step_phase | trim == expected_phase
+    fail_msg: "Step '{{ step_template }}' phase was '{{ _step_phase | trim }}', expected '{{ expected_phase }}'"
+    success_msg: "Step '{{ step_template }}' is '{{ expected_phase }}'"

@@ -1,0 +1,9 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Uninstall kata-deploy helm release
+  ansible.builtin.command:
+    cmd: helm uninstall {{ helm_release }} -n {{ helm_namespace }} --wait
+  register: helm_uninstall
+  changed_when: helm_uninstall.rc == 0
+  failed_when: false

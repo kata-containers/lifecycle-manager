@@ -1,0 +1,28 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Long-running workload pod with heartbeat output.
+# Used by TC-11 to verify no workload disruption during upgrade/rollback.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kata-long-running-workload
+spec:
+  runtimeClassName: kata-qemu
+  restartPolicy: Never
+  tolerations:
+    - operator: Exists
+  containers:
+    - name: workload
+      image: quay.io/kata-containers/alpine-bash-curl:latest
+      command:
+        - sh
+        - -c
+        - |
+          echo "Workload started at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          COUNTER=0
+          while true; do
+            COUNTER=$((COUNTER + 1))
+            echo "heartbeat $COUNTER at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            sleep 5
+          done

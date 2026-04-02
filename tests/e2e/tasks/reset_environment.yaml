@@ -1,0 +1,76 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Full environment reset between test cases.
+# Cleans annotations, labels, taints, workflows, then reinstalls
+# kata-deploy and lifecycle-manager from scratch.
+---
+- name: Delete all argo workflows
+  ansible.builtin.command:
+    cmd: kubectl delete workflows -n {{ argo_namespace }} --all
+  register: wf_delete
+  changed_when: wf_delete.rc == 0
+  failed_when: false
+
+- name: Clean node annotations on worker nodes
+  ansible.builtin.shell:
+    cmd: >-
+      kubectl annotate node {{ item }}
+      katacontainers.io/kata-lifecycle-manager-status-
+      katacontainers.io/kata-current-version-
+  loop:
+    - "{{ worker_node_a }}"
+    - "{{ worker_node_b }}"
+  changed_when: true
+  failed_when: false
+
+- name: Clean node labels on worker nodes
+  ansible.builtin.command:
+    cmd: kubectl label node {{ item }} katacontainers.io/kata-lifecycle-manager-window-
+  loop:
+    - "{{ worker_node_a }}"
+    - "{{ worker_node_b }}"
+  changed_when: true
+  failed_when: false
+
+- name: Remove test-role label from worker nodes
+  ansible.builtin.command:
+    cmd: kubectl label node {{ item }} test-role-
+  loop:
+    - "{{ worker_node_a }}"
+    - "{{ worker_node_b }}"
+  changed_when: true
+  failed_when: false
+
+- name: Remove taints from worker nodes
+  ansible.builtin.command:
+    cmd: kubectl taint nodes {{ item }} kata-lifecycle-manager-
+  loop:
+    - "{{ worker_node_a }}"
+    - "{{ worker_node_b }}"
+  changed_when: true
+  failed_when: false
+
+- name: Uncordon worker nodes
+  ansible.builtin.command:
+    cmd: kubectl uncordon {{ item }}
+  loop:
+    - "{{ worker_node_a }}"
+    - "{{ worker_node_b }}"
+  changed_when: true
+  failed_when: false
+
+- name: Delete long-running workload pod if present
+  ansible.builtin.command:
+    cmd: kubectl delete pod kata-long-running-workload --ignore-not-found --wait=false
+  changed_when: true
+  failed_when: false
+
+- name: Uninstall kata-deploy
+  ansible.builtin.include_tasks: "{{ playbook_dir }}/../roles/kata_deploy/tasks/uninstall.yaml"
+
+- name: Install kata-deploy at from_version
+  ansible.builtin.include_tasks: "{{ playbook_dir }}/../roles/kata_deploy/tasks/main.yaml"
+
+- name: Reinstall lifecycle-manager with current runtime verification pod
+  ansible.builtin.include_tasks: "{{ playbook_dir }}/../roles/lifecycle_manager/tasks/main.yaml"

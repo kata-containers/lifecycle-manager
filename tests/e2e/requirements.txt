@@ -1,0 +1,3 @@
+# ansible-core is installed via apt (python3-kcli and ansible-core packages).
+# This file is kept for environments where pip-based install is preferred.
+ansible-core>=2.16

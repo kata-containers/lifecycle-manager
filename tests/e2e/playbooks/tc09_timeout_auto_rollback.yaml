@@ -1,0 +1,94 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# TC-09: Verification Timeout Auto-Rollback (Pending Pod)
+# Uses a verification pod that requests a non-existent resource,
+# causing it to stay Pending. The workflow should time out (~180s)
+# and auto-rollback, restoring the original state.
+---
+- name: "TC-09: Verification Timeout Auto-Rollback (Pending Pod)"
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Reset environment
+      ansible.builtin.include_tasks: ../tasks/reset_environment.yaml
+
+    - name: Record kata binary version before upgrade
+      ansible.builtin.include_tasks: ../tasks/assertions/kata_binary_version.yaml
+      vars:
+        node_name: "{{ worker_node_a }}"
+        version_fact_name: "_kata_version_before"
+        version_label: "before upgrade"
+
+    - name: Base64-encode timeout verification pod manifest
+      ansible.builtin.shell:
+        cmd: base64 -w0 {{ playbook_dir }}/../files/timeout-verification-pod.yaml
+      register: timeout_pod_b64
+      changed_when: false
+
+    - name: Label worker node A for upgrade
+      ansible.builtin.command:
+        cmd: >-
+          kubectl label node {{ worker_node_a }}
+          katacontainers.io/kata-lifecycle-manager-window=true
+          --overwrite
+
+    - name: Build extra submit arguments
+      ansible.builtin.set_fact:
+        _tc09_extra_args: >-
+          -p verification-pod="{{ timeout_pod_b64.stdout }}"
+          {{ '-p helm-set-values="' + kata_to_helm_set_values + '"' if kata_to_helm_set_values | default('') | length > 0 else '' }}
+
+    - name: Submit upgrade with timeout verification pod
+      ansible.builtin.include_tasks: ../tasks/submit_upgrade.yaml
+      vars:
+        target_version: "{{ kata_to_version }}"
+        node_selector: "katacontainers.io/kata-lifecycle-manager-window=true"
+        extra_submit_args: "{{ _tc09_extra_args }}"
+
+    - name: Wait for workflow to finish
+      ansible.builtin.include_tasks: ../tasks/wait_workflow.yaml
+
+    - name: Assert workflow failed
+      ansible.builtin.include_tasks: ../tasks/assertions/workflow_status.yaml
+      vars:
+        expected_status: Failed
+
+    - name: Assert helm rollback occurred
+      ansible.builtin.include_tasks: ../tasks/assertions/helm_rollback_occurred.yaml
+
+    - name: Assert kata-deploy image rolled back to from_version
+      ansible.builtin.include_tasks: ../tasks/assertions/kata_deploy_image.yaml
+      vars:
+        node_name: "{{ worker_node_a }}"
+        expected_image: "{{ kata_from_version }}"
+
+    - name: Assert node annotation status is rolled-back
+      ansible.builtin.include_tasks: ../tasks/assertions/node_annotation.yaml
+      vars:
+        node_name: "{{ worker_node_a }}"
+        annotation_key: "katacontainers.io/kata-lifecycle-manager-status"
+        expected_value: rolled-back
+
+    - name: Record kata binary version after rollback
+      ansible.builtin.include_tasks: ../tasks/assertions/kata_binary_version.yaml
+      vars:
+        node_name: "{{ worker_node_a }}"
+        version_fact_name: "_kata_version_after"
+        version_label: "after rollback"
+
+    - name: Assert kata binary version unchanged after rollback
+      ansible.builtin.assert:
+        that:
+          - _kata_version_before == _kata_version_after
+        fail_msg: >-
+          kata-runtime version changed after rollback:
+          before='{{ _kata_version_before }}', after='{{ _kata_version_after }}'
+        success_msg: >-
+          kata-runtime version unchanged after rollback:
+          before='{{ _kata_version_before }}', after='{{ _kata_version_after }}'
+
+    - name: Assert worker node A is schedulable
+      ansible.builtin.include_tasks: ../tasks/assertions/node_schedulable.yaml
+      vars:
+        node_name: "{{ worker_node_a }}"

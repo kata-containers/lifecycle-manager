@@ -1,0 +1,24 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Capture the kata-runtime binary version installed on a node.
+# Stores the result in a fact named by `version_fact_name`.
+#
+# Required vars:
+#   node_name         - Kubernetes node name (also the kcli VM name)
+#   version_fact_name - name of the fact to store the version in
+#   version_label     - descriptive label for log output (e.g. "before upgrade")
+---
+- name: Get kata-runtime version on {{ node_name }} ({{ version_label }})
+  ansible.builtin.shell: |
+    kcli ssh {{ node_name }} "sudo /opt/kata/bin/kata-runtime --version 2>/dev/null || sudo /opt/kata/bin/kata-runtime version 2>/dev/null || echo NOTFOUND"
+  register: _kata_version_raw
+  changed_when: false
+
+- name: Show kata-runtime version on {{ node_name }} ({{ version_label }})
+  ansible.builtin.debug:
+    msg: "{{ node_name }} ({{ version_label }}): {{ _kata_version_raw.stdout }}"
+
+- name: Store version as fact {{ version_fact_name }}
+  ansible.builtin.set_fact:
+    "{{ version_fact_name }}": "{{ _kata_version_raw.stdout }}"

@@ -1,0 +1,101 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+---
+- name: Check if VM image is available in kcli
+  ansible.builtin.shell: |
+    kcli list images 2>/dev/null | grep -q '{{ cluster_image }}' && echo "found" || echo "missing"
+  register: _image_check
+  changed_when: false
+
+- name: Download VM image if missing
+  ansible.builtin.command:
+    cmd: >-
+      kcli download image {{ cluster_image }}
+  when: _image_check.stdout | trim == "missing"
+  register: _image_download
+  changed_when: _image_download.rc == 0
+  failed_when: false
+
+- name: Derive cloud-images.ubuntu.com URL from cluster_image
+  ansible.builtin.set_fact:
+    _ubuntu_image_urls:
+      ubuntu2404: "https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+      ubuntu2604: "https://cloud-images.ubuntu.com/resolute/current/resolute-server-cloudimg-amd64.img"
+  when:
+    - _image_check.stdout | trim == "missing"
+    - _image_download is defined
+    - _image_download.rc != 0
+
+- name: Download VM image from cloud-images.ubuntu.com if kcli catalog failed
+  ansible.builtin.shell: |
+    set -euo pipefail
+    kcli download image -u "{{ _ubuntu_image_urls[cluster_image] }}" {{ cluster_image }}
+  args:
+    executable: /bin/bash
+  when:
+    - _image_check.stdout | trim == "missing"
+    - _image_download is defined
+    - _image_download.rc != 0
+    - cluster_image in (_ubuntu_image_urls | default({}))
+  changed_when: true
+
+- name: Create kcli kubeadm cluster
+  ansible.builtin.command:
+    cmd: >-
+      kcli create kube kubeadm
+      --force
+      -t
+      -P ctlplanes={{ cluster_ctlplanes }}
+      -P workers={{ cluster_workers }}
+      -P image={{ cluster_image }}
+      -P memory={{ cluster_memory }}
+      -P numcpus={{ cluster_cpus }}
+      -P disk_size={{ cluster_disk }}
+      -P ingress=false
+      -P autolabel=false
+      -P nfs=false
+      -P multus=false
+      {{ cluster_name }}
+  environment:
+    KUBECONFIG: ""
+  register: kcli_create
+  changed_when: kcli_create.rc == 0
+  timeout: "{{ cluster_create_timeout | int }}"
+
+- name: Wait for all nodes to be Ready
+  ansible.builtin.command:
+    cmd: >-
+      kubectl wait --for=condition=Ready node --all
+      --timeout=300s
+  changed_when: false
+
+- name: Discover control plane node
+  ansible.builtin.command:
+    cmd: >-
+      kubectl get nodes -l node-role.kubernetes.io/control-plane
+      -o jsonpath='{.items[0].metadata.name}'
+  register: cp_node
+  changed_when: false
+
+- name: Discover worker nodes
+  ansible.builtin.command:
+    cmd: >-
+      kubectl get nodes --no-headers
+      -l '!node-role.kubernetes.io/control-plane'
+      -o jsonpath='{.items[*].metadata.name}'
+  register: worker_nodes
+  changed_when: false
+
+- name: Set node name facts
+  ansible.builtin.set_fact:
+    control_plane_node: "{{ cp_node.stdout | trim }}"
+    worker_node_a: "{{ (worker_nodes.stdout.split())[0] }}"
+    worker_node_b: "{{ (worker_nodes.stdout.split())[1] }}"
+
+- name: Display cluster info
+  ansible.builtin.debug:
+    msg: >-
+      Cluster {{ cluster_name }} ready.
+      Control plane: {{ control_plane_node }},
+      Worker A: {{ worker_node_a }},
+      Worker B: {{ worker_node_b }}
