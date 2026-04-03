@@ -266,6 +266,9 @@ jobs:
     runs-on: kata-non-coco-x64
     needs: [e2e, cleanup]
     if: always()
+    permissions:
+      checks: write
+      actions: read
     timeout-minutes: 10
     steps:
       - name: Download all results
