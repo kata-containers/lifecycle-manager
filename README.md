@@ -1,5 +1,7 @@
 # Kata Lifecycle Manager Helm Chart
 
+[![E2E Tests](https://github.com/kata-containers/lifecycle-manager/actions/workflows/e2e-tests.yaml/badge.svg?branch=main)](https://github.com/kata-containers/lifecycle-manager/actions/workflows/e2e-tests.yaml)
+
 Argo Workflows-based lifecycle management for Kata Containers.
 
 This chart installs a namespace-scoped `WorkflowTemplate` that performs controlled,
