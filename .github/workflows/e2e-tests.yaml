@@ -271,47 +271,51 @@ jobs:
       - name: Download all results
         uses: actions/download-artifact@v7
         with:
+          pattern: results-*
           path: all-results/
+
+      - name: List downloaded artifacts
+        run: find all-results/ -type f 2>/dev/null || echo "No artifacts downloaded"
 
       - name: Generate combined summary
         run: |
           echo "## E2E Test Results" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
-          for runtime_dir in all-results/results-*/; do
-            runtime=$(basename "$runtime_dir" | sed 's/results-//')
+          found=false
+          while IFS= read -r -d '' summary; do
+            found=true
+            dir=$(dirname "$summary")
+            runtime=$(basename "$dir" | sed 's/results-//')
             echo "### ${runtime}" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
-
-            if [ -f "${runtime_dir}/summary.md" ]; then
-              cat "${runtime_dir}/summary.md" >> "$GITHUB_STEP_SUMMARY"
-            else
-              echo "No results found." >> "$GITHUB_STEP_SUMMARY"
-            fi
-
+            cat "$summary" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
-          done
+          done < <(find all-results/ -name summary.md -print0 2>/dev/null)
+
+          if [ "$found" = false ]; then
+            echo "No results found." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Publish JUnit results
+        continue-on-error: true
         uses: mikepenz/action-junit-report@v6
         with:
-          report_paths: "all-results/results-*/junit.xml"
+          report_paths: "all-results/**/junit.xml"
           check_name: "E2E Test Results"
           fail_on_failure: true
 
       - name: Final verdict
         run: |
           TOTAL_FAILED=0
-          for results_file in all-results/results-*/results.json; do
-            if [ -f "$results_file" ]; then
-              FAILED=$(python3 -c "
+          while IFS= read -r -d '' results_file; do
+            FAILED=$(python3 -c "
           import json
           with open('${results_file}') as f:
               print(sum(1 for r in json.load(f) if r['status'] == 'FAILED'))
           " 2>/dev/null || echo "0")
-              TOTAL_FAILED=$((TOTAL_FAILED + FAILED))
-            fi
-          done
+            TOTAL_FAILED=$((TOTAL_FAILED + FAILED))
+          done < <(find all-results/ -name results.json -print0 2>/dev/null)
 
           if [ "$TOTAL_FAILED" -gt 0 ]; then
             echo "[FAIL] ${TOTAL_FAILED} test(s) failed across all runtimes"
