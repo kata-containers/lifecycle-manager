@@ -16,11 +16,11 @@ on:
       from_version:
         description: "Kata Containers FROM version (initial install)"
         required: false
-        default: "3.27.0"
+        default: "3.30.0"
       to_version:
         description: "Kata Containers TO version (upgrade target)"
         required: false
-        default: "3.27.0"
+        default: "3.30.0"
       to_image:
         description: "Override upgrade image (empty = default for version)"
         required: false
@@ -42,8 +42,8 @@ jobs:
     timeout-minutes: 180
     env:
       RUNTIME: ${{ matrix.runtime }}
-      FROM_VERSION: ${{ github.event.inputs.from_version || '3.27.0' }}
-      TO_VERSION: ${{ github.event.inputs.to_version || '3.27.0' }}
+      FROM_VERSION: ${{ github.event.inputs.from_version || '3.30.0' }}
+      TO_VERSION: ${{ github.event.inputs.to_version || '3.30.0' }}
       TO_IMAGE: ${{ github.event.inputs.to_image || 'quay.io/kata-containers/kata-deploy-ci:kata-containers-latest' }}
       RESULTS_DIR: ${{ github.workspace }}/results-${{ matrix.runtime }}
 
