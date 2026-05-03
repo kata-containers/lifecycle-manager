@@ -695,10 +695,10 @@ spec:
               --field-selector spec.nodeName="$NODE" \
               -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
             if [[ -n "$POD" ]]; then
-              if kubectl wait pod "$POD" -n "$NS" --for=condition=Ready --timeout=10s 2>/dev/null; then
-                echo "kata-deploy pod $POD is ready"
+              if kubectl wait pod "$POD" -n "$NS" --for=condition=Ready --timeout=30s 2>/dev/null; then
+                echo "kata-deploy pod $POD is ready, waiting for install to finish..."
                 trap - EXIT
-                sleep 10
+                sleep 120
                 exit 0
               fi
             fi
