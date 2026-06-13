@@ -3,19 +3,31 @@
 #
 # Assert that the kata-deploy pod on a node runs the expected image.
 # Required vars: node_name, expected_image (substring match)
+#
+# Only meaningful in daemonset mode (there is a resident kata-deploy pod whose
+# image tag reflects the installed version). In job mode there is no resident
+# pod; the installed version is covered by the kata_binary_version assertions.
 ---
-- name: Get kata-deploy image on {{ node_name }}
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl get pods -n {{ helm_namespace }} -l name=kata-deploy
-      --field-selector spec.nodeName={{ node_name }}
-      -o jsonpath='{.items[0].spec.containers[0].image}'
-  register: _deploy_image
-  changed_when: false
+- name: Check kata-deploy image on {{ node_name }} (daemonset mode only)
+  when: deployment_mode | default('daemonset') == 'daemonset'
+  block:
+    - name: Get kata-deploy image on {{ node_name }}
+      ansible.builtin.shell:
+        cmd: >-
+          kubectl get pods -n {{ helm_namespace }} -l name=kata-deploy
+          --field-selector spec.nodeName={{ node_name }}
+          -o jsonpath='{.items[0].spec.containers[0].image}'
+      register: _deploy_image
+      changed_when: false
 
-- name: Assert kata-deploy image contains {{ expected_image }}
-  ansible.builtin.assert:
-    that:
-      - expected_image in _deploy_image.stdout
-    fail_msg: "kata-deploy image on {{ node_name }} is '{{ _deploy_image.stdout }}', expected to contain '{{ expected_image }}'"
-    success_msg: "kata-deploy image on {{ node_name }} contains '{{ expected_image }}'"
+    - name: Assert kata-deploy image contains {{ expected_image }}
+      ansible.builtin.assert:
+        that:
+          - expected_image in _deploy_image.stdout
+        fail_msg: "kata-deploy image on {{ node_name }} is '{{ _deploy_image.stdout }}', expected to contain '{{ expected_image }}'"
+        success_msg: "kata-deploy image on {{ node_name }} contains '{{ expected_image }}'"
+
+- name: Skip kata-deploy image check (job mode has no resident pod)
+  ansible.builtin.debug:
+    msg: "Skipping kata-deploy pod image check on {{ node_name }} in job mode (version validated via kata binary)."
+  when: deployment_mode | default('daemonset') == 'job'

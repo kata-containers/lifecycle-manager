@@ -8,7 +8,12 @@
 #   node_selector  - label selector for nodes
 #
 # Optional vars:
-#   extra_submit_args - additional -p flags (string)
+#   extra_submit_args      - additional -p flags (string)
+#   submit_deployment_mode - per-submit deployment-mode override (a test setting
+#                            this takes precedence over the global deployment_mode,
+#                            which the harness passes as an -e extra-var)
+#   submit_batch_size      - per-submit batch-size override (takes precedence over
+#                            the global batch_size for the same reason)
 ---
 - name: Build argo submit command
   ansible.builtin.set_fact:
@@ -17,6 +22,8 @@
       --from workflowtemplate/kata-lifecycle-manager
       -p target-version={{ target_version }}
       -p node-selector="{{ node_selector }}"
+      -p deployment-mode={{ submit_deployment_mode | default(deployment_mode | default('auto')) }}
+      -p batch-size={{ submit_batch_size | default(batch_size | default(1)) }}
       {{ extra_submit_args | default('') }}
 
 - name: Show argo submit command

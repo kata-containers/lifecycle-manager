@@ -71,11 +71,10 @@
               kata-runtime version changed (Scenario A):
               before='{{ _kata_version_before_a }}', after='{{ _kata_version_after_a }}'
 
-        - name: "Scenario A - Assert drain step was executed"
-          ansible.builtin.include_tasks: ../tasks/assertions/workflow_step_status.yaml
+        - name: "Scenario A - Assert the node was drained"
+          ansible.builtin.include_tasks: ../tasks/assertions/workflow_log_contains.yaml
           vars:
-            step_template: "drain-node"
-            expected_phase: "Succeeded"
+            expected_substring: "Draining node {{ worker_node_a }}"
 
     # ── Scenario B: Helm values persistence ──
     - name: "Scenario B - Drain via persistent helm values"
@@ -147,11 +146,10 @@
               kata-runtime version changed (Scenario B):
               before='{{ _kata_version_before_b }}', after='{{ _kata_version_after_b }}'
 
-        - name: "Scenario B - Assert drain step was executed"
-          ansible.builtin.include_tasks: ../tasks/assertions/workflow_step_status.yaml
+        - name: "Scenario B - Assert the node was drained"
+          ansible.builtin.include_tasks: ../tasks/assertions/workflow_log_contains.yaml
           vars:
-            step_template: "drain-node"
-            expected_phase: "Succeeded"
+            expected_substring: "Draining node {{ worker_node_a }}"
 
         - name: "Scenario B - Restore lifecycle-manager helm drain default"
           ansible.builtin.command:

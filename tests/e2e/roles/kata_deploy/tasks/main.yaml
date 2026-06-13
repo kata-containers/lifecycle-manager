@@ -1,6 +1,43 @@
 # Copyright (c) 2026 The Kata Containers Authors
 # SPDX-License-Identifier: Apache-2.0
 ---
+- name: Determine chart source (remote OCI/HTTP ref vs local path)
+  ansible.builtin.set_fact:
+    _kd_chart_is_remote: "{{ kata_deploy_chart is match('^(oci|https?)://') }}"
+
+# Remote charts are pinned to kata_from_version; a local chart directory carries
+# its own version in Chart.yaml, so no --version flag is passed for it.
+- name: Set chart version argument
+  ansible.builtin.set_fact:
+    _kd_version_arg: "{{ ('--version ' + kata_from_version) if _kd_chart_is_remote else '' }}"
+
+# job mode needs a chart that exposes the deploymentMode value (kata-deploy
+# >= 3.32.0, or a kata-containers checkout that includes the job-mode work).
+# Released OCI charts < 3.32.0 silently ignore --set deploymentMode=job and would
+# install a DaemonSet instead, so fail fast with actionable guidance.
+- name: Verify the chart supports job mode (deploymentMode value present)
+  when: deployment_mode | default('daemonset') == 'job'
+  block:
+    - name: Read kata-deploy chart default values
+      ansible.builtin.command:
+        cmd: "helm show values {{ kata_deploy_chart }} {{ _kd_version_arg }}"
+      register: _kd_chart_values
+      changed_when: false
+
+    - name: Assert the chart exposes deploymentMode
+      ansible.builtin.assert:
+        that:
+          - "'deploymentMode' in _kd_chart_values.stdout"
+        fail_msg: >-
+          job mode was requested, but the kata-deploy chart '{{ kata_deploy_chart }}'
+          {{ ('(version ' + kata_from_version + ')') if _kd_chart_is_remote else '(local path)' }}
+          does not expose a 'deploymentMode' value. Job mode ships in kata-deploy
+          >= {{ min_job_version }}. To test it before that release, set
+          kata_deploy_chart to a kata-containers checkout, e.g.
+          tools/packaging/kata-deploy/helm-chart/kata-deploy on a branch that
+          includes the job-mode work.
+        success_msg: "kata-deploy chart supports job mode (deploymentMode present)"
+
 - name: Derive helm --set values from kata_from_image
   ansible.builtin.set_fact:
     kata_from_helm_set_values: >-
@@ -13,21 +50,44 @@
     kata_from_helm_set_values: ""
   when: kata_from_image | length == 0
 
-- name: Install kata-deploy {{ kata_from_version }}
+- name: Add job-mode helm values (deployment mode + dispatcher image)
+  ansible.builtin.set_fact:
+    kata_from_helm_set_values: >-
+      {{ kata_from_helm_set_values }}
+      --set deploymentMode=job
+      {{ ('--set job.dispatcherImage.reference=' + (kata_job_dispatcher_image | regex_replace(':[^:]+$', '')) +
+          ' --set job.dispatcherImage.tag=' + kata_job_dispatcher_image.split(':')[-1])
+         if kata_job_dispatcher_image | default('') | length > 0 else '' }}
+  when: deployment_mode | default('daemonset') == 'job'
+
+- name: Install kata-deploy {{ kata_from_version }} ({{ deployment_mode | default('daemonset') }} mode)
   ansible.builtin.shell:
     cmd: >-
       helm upgrade --install {{ helm_release }}
-      oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy
-      --version {{ kata_from_version }}
+      {{ kata_deploy_chart }} {{ _kd_version_arg }}
       --namespace {{ helm_namespace }}
       --create-namespace
       {{ kata_from_helm_set_values }}
   register: helm_install
   changed_when: helm_install.rc == 0
 
-- name: Wait for kata-deploy DaemonSet to be ready
+- name: Wait for kata-deploy DaemonSet to be ready (daemonset mode)
   ansible.builtin.command:
     cmd: >-
       kubectl rollout status daemonset/kata-deploy
       -n {{ helm_namespace }} --timeout={{ kata_deploy_ready_timeout }}s
   changed_when: false
+  when: deployment_mode | default('daemonset') == 'daemonset'
+
+# In job mode the install dispatcher runs as a post-install hook and `helm` blocks
+# until it (and the per-node install Jobs it fans out) complete, so the install is
+# already done here. Confirm by waiting for the targeted nodes to be labeled.
+- name: Wait for nodes to be labeled with kata-runtime (job mode)
+  ansible.builtin.command:
+    cmd: >-
+      kubectl wait nodes
+      -l katacontainers.io/kata-runtime=true
+      --for=jsonpath='{.metadata.labels.katacontainers\.io/kata-runtime}'=true
+      --timeout={{ kata_deploy_ready_timeout }}s
+  changed_when: false
+  when: deployment_mode | default('daemonset') == 'job'

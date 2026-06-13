@@ -52,11 +52,10 @@
       vars:
         expected_status: "Succeeded"
 
-    - name: Assert drain step executed successfully
-      ansible.builtin.include_tasks: ../tasks/assertions/workflow_step_status.yaml
+    - name: Assert the node was drained
+      ansible.builtin.include_tasks: ../tasks/assertions/workflow_log_contains.yaml
       vars:
-        step_template: "drain-node"
-        expected_phase: "Succeeded"
+        expected_substring: "Draining node {{ worker_node_a }}"
 
     - name: Assert kata-deploy image on worker_node_a contains target image
       ansible.builtin.include_tasks: ../tasks/assertions/kata_deploy_image.yaml

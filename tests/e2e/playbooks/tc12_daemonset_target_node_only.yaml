@@ -15,7 +15,7 @@
     - name: Reset environment
       ansible.builtin.include_tasks: ../tasks/reset_environment.yaml
 
-    - name: Record kata-deploy pod UID on worker_node_a
+    - name: Record kata-deploy pod UID on worker_node_a (daemonset mode)
       ansible.builtin.shell:
         cmd: >-
           kubectl get pods -n {{ helm_namespace }} -l name=kata-deploy
@@ -23,8 +23,9 @@
           -o jsonpath='{.items[0].metadata.uid}'
       register: _tc12_pod_a_uid_before
       changed_when: false
+      when: deployment_mode | default('daemonset') == 'daemonset'
 
-    - name: Record kata-deploy pod UID on worker_node_b
+    - name: Record kata-deploy pod UID on worker_node_b (daemonset mode)
       ansible.builtin.shell:
         cmd: >-
           kubectl get pods -n {{ helm_namespace }} -l name=kata-deploy
@@ -32,6 +33,7 @@
           -o jsonpath='{.items[0].metadata.uid}'
       register: _tc12_pod_b_uid_before
       changed_when: false
+      when: deployment_mode | default('daemonset') == 'daemonset'
 
     - name: Record kata binary version on worker_node_a before upgrade
       ansible.builtin.include_tasks: ../tasks/assertions/kata_binary_version.yaml
@@ -76,7 +78,7 @@
       vars:
         expected_status: "Succeeded"
 
-    - name: Get kata-deploy pod UID on worker_node_a after upgrade
+    - name: Get kata-deploy pod UID on worker_node_a after upgrade (daemonset mode)
       ansible.builtin.shell:
         cmd: >-
           kubectl get pods -n {{ helm_namespace }} -l name=kata-deploy
@@ -84,8 +86,9 @@
           -o jsonpath='{.items[0].metadata.uid}'
       register: _tc12_pod_a_uid_after
       changed_when: false
+      when: deployment_mode | default('daemonset') == 'daemonset'
 
-    - name: Assert kata-deploy pod on worker_node_a was recreated
+    - name: Assert kata-deploy pod on worker_node_a was recreated (daemonset mode)
       ansible.builtin.assert:
         that:
           - _tc12_pod_a_uid_after.stdout != _tc12_pod_a_uid_before.stdout
@@ -95,8 +98,9 @@
         success_msg: >-
           Pod UID on worker_node_a changed from '{{ _tc12_pod_a_uid_before.stdout }}'
           to '{{ _tc12_pod_a_uid_after.stdout }}'
+      when: deployment_mode | default('daemonset') == 'daemonset'
 
-    - name: Get kata-deploy pod UID on worker_node_b after upgrade
+    - name: Get kata-deploy pod UID on worker_node_b after upgrade (daemonset mode)
       ansible.builtin.shell:
         cmd: >-
           kubectl get pods -n {{ helm_namespace }} -l name=kata-deploy
@@ -104,8 +108,9 @@
           -o jsonpath='{.items[0].metadata.uid}'
       register: _tc12_pod_b_uid_after
       changed_when: false
+      when: deployment_mode | default('daemonset') == 'daemonset'
 
-    - name: Assert kata-deploy pod on worker_node_b was not recreated
+    - name: Assert kata-deploy pod on worker_node_b was not recreated (daemonset mode)
       ansible.builtin.assert:
         that:
           - _tc12_pod_b_uid_after.stdout == _tc12_pod_b_uid_before.stdout
@@ -114,6 +119,7 @@
           to '{{ _tc12_pod_b_uid_after.stdout }}' (pod was recreated unexpectedly)
         success_msg: >-
           Pod UID on worker_node_b unchanged: {{ _tc12_pod_b_uid_before.stdout }}
+      when: deployment_mode | default('daemonset') == 'daemonset'
 
     - name: Assert kata-deploy image on worker_node_a contains target image
       ansible.builtin.include_tasks: ../tasks/assertions/kata_deploy_image.yaml

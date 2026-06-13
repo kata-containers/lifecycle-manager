@@ -3,7 +3,7 @@
 #
 # Assert that a specific workflow step template has the expected phase.
 # Required vars:
-#   step_template  - template name to look for (e.g. "drain-node")
+#   step_template  - template name to look for (e.g. "prepare-cordon-batch")
 #   expected_phase - expected phase (e.g. "Succeeded", "Skipped", "Failed")
 ---
 - name: Get latest workflow details

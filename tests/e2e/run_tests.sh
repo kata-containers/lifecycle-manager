@@ -19,6 +19,9 @@ SKIP_CLUSTER_DELETE=false
 FROM_VERSION=""
 TO_VERSION=""
 TO_IMAGE=""
+DEPLOYMENT_MODE=""
+BATCH_SIZE=""
+KATA_DEPLOY_CHART=""
 RESULTS_DIR="${SCRIPT_DIR}/results"
 ROTATE_LOGS_ONLY=false
 SETUP_ONLY=false
@@ -43,6 +46,11 @@ Options:
   --from-version <version>                  Override kata_from_version
   --to-version <version>                    Override kata_to_version
   --to-image <image>                        Override kata_to_image
+  --deployment-mode <daemonset|job>         Override deployment_mode (default: daemonset)
+  --batch-size <N>                          Override batch_size (default: 1 = node-by-node)
+  --kata-deploy-chart <ref|path>            Override kata_deploy_chart (OCI ref or local
+                                            kata-containers checkout; needed to test job
+                                            mode before it ships in a released chart)
   --results-dir <path>                      Output directory (default: ./results)
   --rotate-logs-only                        Only perform log rotation, then exit
   --setup-only                              Run setup, write env.sh, then exit
@@ -61,6 +69,9 @@ while [[ $# -gt 0 ]]; do
         --from-version)      FROM_VERSION="$2"; shift 2 ;;
         --to-version)        TO_VERSION="$2"; shift 2 ;;
         --to-image)          TO_IMAGE="$2"; shift 2 ;;
+        --deployment-mode)   DEPLOYMENT_MODE="$2"; shift 2 ;;
+        --batch-size)        BATCH_SIZE="$2"; shift 2 ;;
+        --kata-deploy-chart) KATA_DEPLOY_CHART="$2"; shift 2 ;;
         --results-dir)       RESULTS_DIR="$2"; shift 2 ;;
         --rotate-logs-only)  ROTATE_LOGS_ONLY=true; shift ;;
         --setup-only)        SETUP_ONLY=true; shift ;;
@@ -255,6 +266,10 @@ TC_NAMES=(
     [13]="Node-by-Node Sequential"
     [14]="Partial Failure Stops"
     [15]="Drain Multi-Node"
+    [16]="Wave-Based Batch Upgrade"
+    [17]="Reject Deployment-Mode Switch"
+    [18]="Auto-Detect Deployment Mode"
+    [19]="Wave Partial Failure Rollback"
 )
 
 declare -A TC_FILES
@@ -329,6 +344,15 @@ build_extra_vars() {
     fi
     if [ -n "${TO_IMAGE}" ]; then
         EXTRA_VARS="${EXTRA_VARS} kata_to_image=${TO_IMAGE}"
+    fi
+    if [ -n "${DEPLOYMENT_MODE}" ]; then
+        EXTRA_VARS="${EXTRA_VARS} deployment_mode=${DEPLOYMENT_MODE}"
+    fi
+    if [ -n "${BATCH_SIZE}" ]; then
+        EXTRA_VARS="${EXTRA_VARS} batch_size=${BATCH_SIZE}"
+    fi
+    if [ -n "${KATA_DEPLOY_CHART}" ]; then
+        EXTRA_VARS="${EXTRA_VARS} kata_deploy_chart=${KATA_DEPLOY_CHART}"
     fi
 
     CLUSTER_NAME="kata-e2e-${RUNTIME}"

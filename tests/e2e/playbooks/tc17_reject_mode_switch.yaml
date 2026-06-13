@@ -1,0 +1,91 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# TC-17: Reject Deployment-Mode Switch (daemonset -> job migration guard)
+#
+# The release is installed in daemonset mode. Submitting a workflow that requests
+# deployment-mode=job (with a target-version >= the job-mode minimum so the
+# version gate passes) must fail fast in check-prerequisites with the migration
+# instructions, and must NOT change the node's installed version or leave it
+# cordoned. kata-lifecycle-manager never flips deploymentMode on a live release.
+#
+# Only meaningful when the release is daemonset, so it is skipped in job-mode CI.
+---
+- name: "TC-17: Reject Deployment-Mode Switch (daemonset -> job migration guard)"
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Run daemonset -> job rejection test (daemonset releases only)
+      when: deployment_mode | default('daemonset') == 'daemonset'
+      block:
+        - name: Reset environment
+          ansible.builtin.include_tasks: ../tasks/reset_environment.yaml
+
+        - name: Record kata binary version on worker_node_a before submit
+          ansible.builtin.include_tasks: ../tasks/assertions/kata_binary_version.yaml
+          vars:
+            node_name: "{{ worker_node_a }}"
+            version_fact_name: "_kata_version_before_a"
+            version_label: "worker_node_a before submit"
+
+        - name: Label worker_node_a for upgrade window
+          ansible.builtin.command:
+            cmd: >-
+              kubectl label node {{ worker_node_a }}
+              katacontainers.io/kata-lifecycle-manager-window=true
+              --overwrite
+
+        - name: Submit workflow requesting job mode against a daemonset release
+          ansible.builtin.include_tasks: ../tasks/submit_upgrade.yaml
+          vars:
+            target_version: "{{ min_job_version }}"
+            node_selector: "katacontainers.io/kata-lifecycle-manager-window=true"
+            submit_deployment_mode: "job"
+
+        - name: Wait for workflow to finish
+          ansible.builtin.include_tasks: ../tasks/wait_workflow.yaml
+
+        - name: Assert workflow failed
+          ansible.builtin.include_tasks: ../tasks/assertions/workflow_status.yaml
+          vars:
+            expected_status: "Failed"
+
+        - name: Assert logs explain the mode switch is rejected
+          ansible.builtin.include_tasks: ../tasks/assertions/workflow_log_contains.yaml
+          vars:
+            expected_substring: "cannot switch deployment mode"
+
+        - name: Assert logs include the daemonset -> job migration instructions
+          ansible.builtin.include_tasks: ../tasks/assertions/workflow_log_contains.yaml
+          vars:
+            expected_substring: "To migrate daemonset -> job"
+
+        - name: Record kata binary version on worker_node_a after submit
+          ansible.builtin.include_tasks: ../tasks/assertions/kata_binary_version.yaml
+          vars:
+            node_name: "{{ worker_node_a }}"
+            version_fact_name: "_kata_version_after_a"
+            version_label: "worker_node_a after submit"
+
+        - name: Assert kata binary version unchanged (nothing was applied)
+          ansible.builtin.assert:
+            that:
+              - _kata_version_before_a == _kata_version_after_a
+            fail_msg: >-
+              kata-runtime version changed on worker_node_a, but the workflow should
+              have failed before applying anything:
+              before='{{ _kata_version_before_a }}', after='{{ _kata_version_after_a }}'
+            success_msg: >-
+              kata-runtime version unchanged on worker_node_a (guard rejected before applying)
+
+        - name: Assert worker_node_a is still schedulable (never cordoned)
+          ansible.builtin.include_tasks: ../tasks/assertions/node_schedulable.yaml
+          vars:
+            node_name: "{{ worker_node_a }}"
+
+    - name: Skip in job mode (release is not daemonset)
+      when: deployment_mode | default('daemonset') == 'job'
+      ansible.builtin.debug:
+        msg: >-
+          Skipping daemonset -> job rejection test: the release under test is
+          already running in job mode.
