@@ -4,12 +4,19 @@
 
 Argo Workflows-based lifecycle management for Kata Containers.
 
-This chart installs a namespace-scoped `WorkflowTemplate` that performs controlled,
-node-by-node upgrades of kata-deploy with verification and automatic rollback on failure.
+This chart installs a namespace-scoped `WorkflowTemplate` that performs controlled
+upgrades of kata-deploy with verification and automatic rollback on failure. **You choose
+the rollout granularity**: strict **node-by-node** (the default) or, by raising `batch-size`,
+larger **waves** of nodes at a time (important for large fleets where one-at-a-time does not
+scale). It supports both kata-deploy deployment models (DaemonSet and the newer Job mode).
+See [Deployment Modes](#deployment-modes-daemonset-vs-job) and
+[Node-by-Node vs Waves](#node-by-node-vs-waves-batch-size).
 
 ## Prerequisites
 
-- Kubernetes cluster with **kata-deploy installed via Helm** (chart **3.27.0 or higher** required; the workflow uses `helm upgrade --install` and relies on the kata-deploy chart to set DaemonSet `updateStrategy.type=OnDelete`)
+- Kubernetes cluster with **kata-deploy installed via Helm**. Minimum chart version depends on the [deployment mode](#deployment-modes-daemonset-vs-job):
+  - **daemonset** mode: **3.27.0 or higher** (the workflow relies on the chart setting DaemonSet `updateStrategy.type=OnDelete`)
+  - **job** mode: **3.32.0 or higher** (first release shipping Job mode, kata-containers PR #13155)
 - **Argo Workflows** v3.4+ installed **before** installing kata-lifecycle-manager (this chart only installs the `WorkflowTemplate`; it does not install Argo). Installation guide: [Argo Workflows releases](https://github.com/argoproj/argo-workflows/releases/) (not Argo CD)
 - `helm` CLI and `argo` CLI (Argo Workflows CLI, not `argocd`)
 - **Verification pod spec** (see [Verification Pod](#verification-pod-required))
@@ -164,12 +171,14 @@ argo submit -n argo --from workflowtemplate/kata-lifecycle-manager \
 argo watch @latest
 ```
 
-### 3. Sequential Upgrade Behavior
+### 3. Node-by-Node (default) or Waves
 
-Nodes are upgraded **sequentially** (one at a time) to ensure fleet consistency.
-If any node fails verification, the workflow stops immediately and that node is
-rolled back. This prevents ending up with a mixed fleet where some nodes have
-the new version and others have the old version.
+By default (`batch-size=1`) nodes are upgraded **strictly one at a time**: each node is
+verified before the next is touched. If you prefer, raise `batch-size` to upgrade in
+**waves** of N nodes at a time. Either way, after each node/wave the affected node(s) are
+verified; if any fails verification it is rolled back and the workflow stops immediately,
+so you never end up with a large mixed-version fleet. See
+[Node-by-Node vs Waves](#node-by-node-vs-waves-batch-size).
 
 ## Configuration
 
@@ -178,6 +187,8 @@ the new version and others have the old version.
 | `argoNamespace` | Namespace for Argo resources | `argo` |
 | `defaults.helmRelease` | kata-deploy Helm release name | `kata-deploy` |
 | `defaults.helmNamespace` | kata-deploy namespace | `kube-system` |
+| `defaults.deploymentMode` | kata-deploy model: `auto` \| `daemonset` \| `job` (`auto` detects from the release) | `auto` |
+| `defaults.batchSize` | Nodes upgraded per wave (`1` = strict node-by-node) | `1` |
 | `defaults.nodeSelector` | Node label selector (optional if using taints) | `""` |
 | `defaults.nodeTaintKey` | Taint key for node selection | `""` |
 | `defaults.nodeTaintValue` | Taint value filter (optional) | `""` |
@@ -197,6 +208,8 @@ When submitting a workflow, you can override:
 | `target-version` | **Required** - Target Kata version |
 | `helm-release` | Helm release name |
 | `helm-namespace` | Namespace of kata-deploy |
+| `deployment-mode` | `auto` \| `daemonset` \| `job` (`auto` detects from the release) |
+| `batch-size` | Nodes upgraded per wave (`1` = strict node-by-node) |
 | `node-selector` | Label selector for nodes |
 | `node-taint-key` | Taint key for node selection |
 | `node-taint-value` | Taint value filter |
@@ -206,28 +219,110 @@ When submitting a workflow, you can override:
 | `drain-timeout` | Timeout for drain operation |
 | `helm-set-values` | Extra `--set` values for `helm upgrade` (see [Custom Image](#custom-image)) |
 
+## Deployment Modes (DaemonSet vs Job)
+
+kata-deploy can install Kata on nodes two ways, and kata-lifecycle-manager supports both.
+`deployment-mode=auto` (the default) detects which the target release uses by reading
+its Helm values (`deploymentMode`), so you normally do not need to set it.
+
+| Mode | kata-deploy model | How a wave is applied | Min chart |
+|------|-------------------|-----------------------|-----------|
+| `daemonset` | Long-running privileged DaemonSet (chart default) | `helm upgrade` once with `updateStrategy.type=OnDelete`, then delete the kata-deploy pod on each node in the wave to roll it | `3.27.0` |
+| `job` | No resident component; a dispatcher Job fans out short-lived per-node install Jobs | one `helm upgrade --set 'job.nodes={...wave...}'` per wave; the dispatcher installs the wave's nodes concurrently (`job.parallelism` = wave size) and Helm blocks until they finish | `3.32.0` |
+
+In **job mode** there is no DaemonSet and no `updateStrategy`. The workflow scopes each
+`helm upgrade` to just the wave's nodes via `job.nodes`, so kata-deploy's dispatcher only
+installs those nodes — giving the same wave-by-wave control. Rollback in job mode cannot
+use `helm rollback` (it would not re-run the dispatcher), so a failed node is reverted by a
+scoped re-upgrade to the previous chart version.
+
+> **Note:** kata-deploy keeps the DaemonSet as its default for now, but Job mode becomes the
+> default in Kata 4.0 and the DaemonSet is slated for removal around 4.2. Job mode is the
+> forward-looking path.
+
+### Switching an existing release between modes
+
+kata-lifecycle-manager upgrades nodes in scoped waves and assumes the release is **already**
+in the requested mode. It will **not** flip `deploymentMode` on a live release, because that
+adds/removes the kata-deploy DaemonSet cluster-wide in a single step that cannot be done
+wave-by-wave. If the requested `deployment-mode` differs from the mode the release is
+currently running, the workflow fails fast in `check-prerequisites` and prints the exact
+migration command (it does not partially apply anything).
+
+To migrate **daemonset → job**, do the one-time switch yourself, then resume controlled
+upgrades:
+
+```bash
+# 1. One-time, cluster-wide switch to job mode (requires kata-deploy >= 3.32.0).
+helm upgrade <release> \
+  oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy \
+  --namespace <ns> --version 3.32.0 --reuse-values \
+  --set deploymentMode=job --set verification.pod=
+
+# 2. Confirm nodes are labeled, then run wave-by-wave upgrades as usual.
+argo submit -n argo --from workflowtemplate/kata-lifecycle-manager \
+  -p target-version=3.33.0 -p deployment-mode=job   # or deployment-mode=auto
+```
+
+Notes:
+- Because job mode only exists from 3.32.0, the switch necessarily moves every targeted node
+  to the chosen version at once; it cannot be staged. Subsequent upgrades are wave-by-wave again.
+- Already-installed host artifacts are not removed, so running Kata workloads keep working
+  across the switch.
+- The reverse (**job → daemonset**) works the same way with
+  `--set deploymentMode=daemonset --set updateStrategy.type=OnDelete`.
+
+## Node-by-Node vs Waves (`batch-size`)
+
+You decide the rollout granularity with `batch-size`:
+
+- `batch-size=1` (**default**): strict **node-by-node** — verify each node before touching
+  the next. Safest, slowest; ideal for canaries and small/critical fleets.
+- `batch-size=N`: upgrade up to **N nodes per wave**, verify the whole wave, then continue;
+  on any verification failure the failed node(s) are rolled back and the workflow stops.
+
+Both behave identically with respect to verification and fail-fast — the only difference is
+how many nodes are in flight at once. Node-by-node remains fully supported and is the
+default; waves are an opt-in for when one-at-a-time does not scale (e.g. ~1000 nodes):
+
+```bash
+# Node-by-node (default): nothing extra to set
+argo submit -n argo --from workflowtemplate/kata-lifecycle-manager \
+  -p target-version=3.32.0
+
+# Waves: opt in by raising batch-size
+argo submit -n argo --from workflowtemplate/kata-lifecycle-manager \
+  -p target-version=3.32.0 \
+  -p batch-size=50
+```
+
+In **job mode** the whole wave installs concurrently — `batch-size` is passed to the
+kata-deploy dispatcher as `job.parallelism`. To pace how many CRI runtimes restart at once,
+lower `batch-size` (the wave is cordoned and verified as a unit, so a smaller wave is the
+right way to throttle).
+
 ## Deploy Flow
 
-For each node selected by the node-selector label:
+For each wave of up to `batch-size` selected nodes:
 
-1. **Prepare**: Annotate node with deploy status
-2. **Cordon**: Mark node as `unschedulable`
-3. **Drain** (optional): Evict pods if `drain-enabled=true`
-4. **Helm Upgrade**: Run `helm upgrade --install` with `updateStrategy.type=OnDelete` (kata-deploy chart 3.27.0+ applies this)
-   - This updates the DaemonSet spec but does NOT restart pods automatically
-5. **Trigger Pod Restart**: Delete the kata-deploy pod on THIS node only
-   - This triggers recreation with the new image on just this node
-6. **Wait**: Wait for new kata-deploy pod to be ready
-7. **Verify**: Run verification pod and check exit code
-8. **On Success**: `Uncordon` node, proceed to next node
-9. **On Failure**: Automatic rollback (helm rollback + pod restart), `uncordon`, workflow stops
+1. **Prepare**: Annotate each node with deploy status
+2. **Cordon**: Mark each node `unschedulable` (and **Drain** if `drain-enabled=true`)
+3. **Apply** (mode-specific):
+   - **daemonset**: a single `helm upgrade --install` (run once, up front) sets
+     `updateStrategy.type=OnDelete`; the wave step then deletes the kata-deploy pod on each
+     node so it is recreated with the new image — other nodes are untouched.
+   - **job**: a `helm upgrade --install --set 'job.nodes={wave}'` makes kata-deploy's
+     dispatcher install exactly the wave's nodes via short-lived per-node install Jobs.
+4. **Wait**: daemonset → each node's kata-deploy pod becomes Ready; job → each node is
+   labeled `katacontainers.io/kata-runtime=true` (the install Jobs already completed).
+5. **Verify**: run the verification pod on every node in the wave (concurrently) and check
+   exit codes.
+6. **On Success**: `Uncordon` the verified nodes, proceed to the next wave.
+7. **On Failure**: roll back the failed node(s) (daemonset → `helm rollback` + pod restart;
+   job → scoped re-upgrade to the previous version), `uncordon`, and the workflow stops.
 
-**True node-by-node control**: By using `updateStrategy: OnDelete`, the workflow
-ensures that only the current node's pod restarts. Other nodes continue running
-the previous version until explicitly upgraded.
-
-Nodes are processed **sequentially** (one at a time). If verification fails on any node,
-the workflow stops immediately, preventing a mixed-version fleet.
+If verification fails in any wave, the workflow stops immediately, preventing a large
+mixed-version fleet (already-verified waves keep the new version).
 
 ### When to Use Drain
 
@@ -282,14 +377,16 @@ Any kata-deploy chart value can be overridden this way, not just the image.
 
 ## Rollback
 
-**Automatic rollback on verification failure:** If the verification pod fails (non-zero exit),
-kata-lifecycle-manager automatically:
-1. Runs `helm rollback` to revert to the previous Helm release
-2. Waits for kata-deploy DaemonSet to be ready with the previous version
-3. `Uncordons` the node
-4. Annotates the node with `rolled-back` status
+**Automatic rollback on verification failure:** If a verification pod fails (non-zero exit),
+kata-lifecycle-manager automatically reverts the failed node(s) in that wave:
+- **daemonset**: `helm rollback` to the previous release, then restart the node's pod and
+  wait for it to be Ready with the previous version.
+- **job**: `helm rollback` would not re-run the dispatcher, so the node is reverted by a
+  scoped `helm upgrade` back to the previous chart version (reinstalling the old artifacts
+  on just that node).
 
-This ensures nodes are never left in a broken state.
+Then the node is `uncordoned`, annotated `rolled-back`, and the workflow stops. This
+ensures nodes are never left in a broken state.
 
 **Manual rollback:** For cases where you need to rollback a successfully upgraded node:
 
@@ -297,6 +394,9 @@ This ensures nodes are never left in a broken state.
 argo submit -n argo --from workflowtemplate/kata-lifecycle-manager \
   --entrypoint rollback-node \
   -p node-name=worker-1
+# job mode: optionally pin the version to reinstall (defaults to the previous
+# revision's chart version from `helm history`):
+#   -p rollback-version=3.32.0
 ```
 
 ## Monitoring
@@ -324,23 +424,26 @@ Status values:
 - `rolling-back` - Rollback in progress (automatic on verification failure)
 - `rolled-back` - Rollback completed
 
-## How Node-by-Node Control Works
+## How Controlled Rollout Works
 
-The workflow uses `updateStrategy.type=OnDelete` to achieve true node-by-node control:
+The workflow only ever touches the current node (or, with `batch-size>1`, the current
+wave's nodes), leaving the rest of the fleet untouched until their turn:
 
-1. **Helm upgrade** updates the DaemonSet spec but pods don't restart automatically
-2. The workflow **explicitly deletes** the kata-deploy pod on the current node
-3. Kubernetes recreates the pod with the new image on just that node
-4. Other nodes continue running the previous version until their turn
+- **daemonset**: `helm upgrade` sets `updateStrategy.type=OnDelete` so pods don't restart
+  automatically; the workflow explicitly deletes the kata-deploy pod(s) on the current
+  node(s), so Kubernetes recreates only those with the new image.
+- **job**: each `helm upgrade` is scoped with `job.nodes={...current node(s)...}`, so
+  kata-deploy's dispatcher creates per-node install Jobs only for those nodes.
 
-This ensures that if verification fails on Node B, Node A is still running the
-new version (verified working) while the workflow stops. No automatic cluster-wide
-rollback occurs unless explicitly triggered.
+This ensures that if verification fails later, the earlier (verified) nodes keep running the
+new version while the workflow stops. No automatic cluster-wide rollback occurs unless
+explicitly triggered.
 
 **Rollback behavior:**
-- On verification failure, `helm rollback` reverts the DaemonSet spec
-- The pod on the failed node is deleted to restart with the previous version
-- Already-verified nodes continue running the new version (their pods weren't touched)
+- On verification failure, only the failed node(s) in the wave are reverted to the previous
+  version (daemonset → `helm rollback` + pod restart; job → scoped re-upgrade to the
+  previous chart version).
+- Already-verified waves continue running the new version (they aren't touched).
 
 ## For Projects Using kata-deploy
 
@@ -362,7 +465,7 @@ argo submit -n argo --from workflowtemplate/kata-lifecycle-manager \
   -p target-version=3.27.0
 ```
 
-**Note:** `target-version` must be **3.27.0 or higher**; the workflow will fail at prerequisites otherwise.
+**Note:** `target-version` must meet the per-mode minimum (daemonset **3.27.0+**, job **3.32.0+**); the workflow will fail at prerequisites otherwise.
 
 ## Testing from a fork
 
