@@ -43,12 +43,50 @@ orchestrating upgrades across nodes in a controlled manner.
 5. Work with the existing `kata-deploy` Helm chart
 6. Support all Kata-supported architectures
 
-### Minimum kata-deploy Version (3.27.0)
+### Deployment Modes and Minimum kata-deploy Versions
 
-kata-lifecycle-manager requires **kata-deploy Helm chart 3.27.0 or higher**. The workflow runs
-`helm upgrade --install` and relies on the kata-deploy chart to set DaemonSet
-`updateStrategy.type=OnDelete`. That support is present in the chart from 3.27.0 onward.
-The workflow validates `target-version >= 3.27.0` at prerequisites and fails fast otherwise.
+kata-deploy supports two installation models, and kata-lifecycle-manager works with both
+(selected via `deployment-mode`, default `auto`, which detects the model from the release's
+Helm values):
+
+- **daemonset** (chart default): a long-running privileged DaemonSet installs Kata on each
+  node. kata-lifecycle-manager rolls one pod per node using `updateStrategy.type=OnDelete`,
+  which the chart supports from **3.27.0** onward.
+- **job** (kata-containers PR #13155): no resident component; a dispatcher Job fans out
+  short-lived, per-node install Jobs. kata-lifecycle-manager drives the dispatcher one wave
+  at a time by scoping `job.nodes`. Available from kata-deploy **3.32.0** onward.
+
+The workflow validates `target-version` against the per-mode minimum at prerequisites and
+fails fast otherwise.
+
+`auto` detection reads `deploymentMode` from the current release's coalesced Helm values; a
+chart older than 3.32.0 has no such key, so it is treated as **daemonset**. This makes `auto`
+safe against pre-3.32.0 releases and means `auto` always follows the mode the release is
+already in — it never initiates a mode switch.
+
+**No in-flight mode switching.** Because the controller upgrades nodes in scoped waves, it
+requires the release to already be in the requested mode. If the requested `deployment-mode`
+differs from the detected one, `check-prerequisites` fails fast (before applying anything)
+and prints the one-time `helm upgrade --set deploymentMode=...` migration command. Switching
+modes flips the DaemonSet on/off cluster-wide in a single step that cannot be staged
+wave-by-wave; for daemonset → job it also requires jumping to >= 3.32.0 (where job mode first
+exists), so that migration moves all targeted nodes at once. Host artifacts are preserved
+across the switch, so running workloads are unaffected; subsequent upgrades resume
+wave-by-wave.
+
+### Rollout Granularity (Node-by-Node or Waves)
+
+The operator chooses the granularity via `batch-size`:
+
+- `batch-size=1` (**default**): strict **node-by-node** — verify each node before the next.
+- `batch-size=N`: upgrade up to N nodes per **wave**, verifying the wave as a unit.
+
+In both cases, on any verification failure the failed node(s) are rolled back and the
+workflow stops before continuing. Node-by-node remains the default and is fully supported;
+waves are an opt-in for large fleets (hundreds/thousands of nodes) where strict
+one-at-a-time does not scale. In job mode, `batch-size` is also passed to the kata-deploy
+dispatcher as `job.parallelism`, so the whole wave's per-node install Jobs run concurrently
+(the wave is cordoned and verified as a unit); to throttle installs, lower `batch-size`.
 
 ## Non-Goals
 
@@ -199,11 +237,16 @@ For each node selected by the label/taint selector:
                   └────────────┘    └──────────────┘    └────────────┘
 ```
 
-**True node-by-node control:** The workflow uses `updateStrategy.type=OnDelete` which
-means Kubernetes does NOT automatically restart pods when the DaemonSet spec changes.
-The workflow explicitly deletes the kata-deploy pod on the current node only, triggering
-a restart with the new image on just that node. Other nodes continue running the
-previous version until their turn.
+**Controlled rollout:** Only the current node (or, with `batch-size>1`, the current wave's nodes) is touched.
+- In **daemonset** mode the workflow uses `updateStrategy.type=OnDelete` so Kubernetes does
+  NOT automatically restart pods when the DaemonSet spec changes; it explicitly deletes the
+  kata-deploy pod on each node in the wave, triggering a restart with the new image on just
+  those nodes.
+- In **job** mode each `helm upgrade` is scoped with `job.nodes={wave}`, so kata-deploy's
+  dispatcher creates per-node install Jobs only for the wave's nodes.
+
+Other nodes continue running the previous version until their wave. With `batch-size=1`
+this is strict node-by-node.
 
 **Note:** Drain is not required for Kata upgrades. Running Kata VMs continue using
 the in-memory binaries. Only new workloads use the upgraded binaries. Cordon ensures
@@ -367,12 +410,15 @@ This enables:
 
 ### Rollback Support
 
-**Automatic rollback on verification failure:** If the verification pod fails (non-zero exit),
-kata-lifecycle-manager automatically:
-1. Runs `helm rollback` to revert to the previous Helm release
-2. Waits for kata-deploy DaemonSet to be ready with the previous version
-3. `Uncordons` the node
-4. Annotates the node with `rolled-back` status
+**Automatic rollback on verification failure:** If a verification pod fails (non-zero exit),
+kata-lifecycle-manager automatically reverts the failed node(s) in that wave, then
+`uncordons` them, annotates `rolled-back`, and stops the workflow. The revert mechanism is
+mode-specific:
+- **daemonset**: `helm rollback` to the previous release, then restart the node's pod and
+  wait for it to be ready with the previous version.
+- **job**: a plain `helm rollback` would not re-run the dispatcher, so the node is reverted
+  via a scoped `helm upgrade` back to the previous chart version (captured at workflow
+  start), reinstalling the old artifacts on just that node.
 
 This ensures nodes are never left in a broken state.
 
@@ -415,10 +461,11 @@ The workflow requires the following permissions:
 
 | Resource | Verbs | Purpose |
 |----------|-------|---------|
-| nodes | get, list, watch, patch | `cordon`/`uncordon`, annotations |
+| nodes | get, list, watch, patch | `cordon`/`uncordon`, annotations, label checks |
 | pods | get, list, watch, create, delete | Verification pods |
 | pods/log | get | Verification output |
-| `daemonsets` | get, list, watch | Wait for `kata-deploy` |
+| `daemonsets` | get, list, watch | Wait for `kata-deploy` (daemonset mode) |
+| `jobs` (batch) | get, list, watch, create, update, patch, delete | kata-deploy hooks; job-mode dispatcher + per-node install/cleanup Jobs |
 
 ## User Experience
 
