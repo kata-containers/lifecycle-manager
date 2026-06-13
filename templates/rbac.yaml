@@ -32,7 +32,7 @@ rules:
   - apiGroups: [""]
     resources: ["pods/eviction"]
     verbs: ["create"]
-  # DaemonSet operations (kata-deploy is a DaemonSet)
+  # DaemonSet operations (kata-deploy in daemonset deployment mode)
   - apiGroups: ["apps"]
     resources: ["daemonsets"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -56,7 +56,8 @@ rules:
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["clusterroles", "clusterrolebindings", "roles", "rolebindings"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # Jobs (kata-deploy may have post-install/post-delete hooks)
+  # Jobs (kata-deploy post-install/post-delete hooks; in job mode the install
+  # dispatcher hook Job plus the per-node install/cleanup Jobs it fans out)
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

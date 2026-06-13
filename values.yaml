@@ -12,6 +12,29 @@ defaults:
   # Namespace where kata-deploy is installed
   helmNamespace: kube-system
 
+  # kata-deploy deployment model the release uses:
+  #   auto      - (default) detect from the existing release values
+  #               (helm get values .deploymentMode), falling back to daemonset.
+  #   daemonset - long-running privileged DaemonSet; upgrades roll one pod per
+  #               node via updateStrategy.type=OnDelete (kata-deploy >= 3.27.0).
+  #   job       - no resident component; a dispatcher Job fans out short-lived,
+  #               per-node install Jobs. The workflow drives the dispatcher one
+  #               wave (batch) at a time so it can verify and roll back per node.
+  deploymentMode: auto
+
+  # Number of nodes upgraded per wave (batch).
+  #   1            - strict node-by-node (verify each node before the next).
+  #   N (> 1)      - upgrade up to N nodes per wave, then verify the whole wave;
+  #                  if any node fails verification the wave's failed node(s) are
+  #                  rolled back and the workflow stops (fail-fast between waves).
+  # On large fleets (hundreds/thousands of nodes) raise this substantially -
+  # upgrading strictly one node at a time does not scale.
+  #
+  # In job mode this also sets the kata-deploy dispatcher's job.parallelism, so
+  # the whole wave's per-node install Jobs run concurrently (the wave is cordoned
+  # together and verified together anyway). To pace installs, lower batchSize.
+  batchSize: 1
+
   # Label selector for nodes to upgrade (optional if using taint selection)
   nodeSelector: ""
 
