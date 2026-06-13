@@ -20,11 +20,30 @@ on:
       to_version:
         description: "Kata Containers TO version (upgrade target)"
         required: false
-        default: "3.30.0"
+        default: "3.27.0"
       to_image:
         description: "Override upgrade image (empty = default for version)"
         required: false
         default: "quay.io/kata-containers/kata-deploy-ci:kata-containers-latest"
+      # NOTE: full job-mode functional runs are deferred until kata-deploy 3.32.0
+      # is released (no published chart exposes job mode yet). Choosing 'job' here
+      # currently fails fast at the kata-deploy install preflight with guidance,
+      # unless kata_deploy_chart points at a job-capable chart. Mode-detection,
+      # migration-guard, and batching tests run under the default daemonset mode.
+      deployment_mode:
+        description: "kata-deploy deployment mode under test (job is deferred until 3.32.0)"
+        required: false
+        type: choice
+        options: [daemonset, job]
+        default: daemonset
+      batch_size:
+        description: "Nodes upgraded per wave (1 = node-by-node)"
+        required: false
+        default: "1"
+      kata_deploy_chart:
+        description: "kata-deploy chart source (OCI ref or local path; needed to test job mode pre-release)"
+        required: false
+        default: ""
 
 concurrency:
   group: e2e-tests
@@ -43,8 +62,11 @@ jobs:
     env:
       RUNTIME: ${{ matrix.runtime }}
       FROM_VERSION: ${{ github.event.inputs.from_version || '3.30.0' }}
-      TO_VERSION: ${{ github.event.inputs.to_version || '3.30.0' }}
+      TO_VERSION: ${{ github.event.inputs.to_version || '3.27.0' }}
       TO_IMAGE: ${{ github.event.inputs.to_image || 'quay.io/kata-containers/kata-deploy-ci:kata-containers-latest' }}
+      DEPLOYMENT_MODE: ${{ github.event.inputs.deployment_mode || 'daemonset' }}
+      BATCH_SIZE: ${{ github.event.inputs.batch_size || '1' }}
+      KATA_DEPLOY_CHART: ${{ github.event.inputs.kata_deploy_chart || '' }}
       RESULTS_DIR: ${{ github.workspace }}/results-${{ matrix.runtime }}
 
     steps:
@@ -66,6 +88,9 @@ jobs:
             --from-version "$FROM_VERSION" \
             --to-version "$TO_VERSION" \
             --to-image "$TO_IMAGE" \
+            --deployment-mode "$DEPLOYMENT_MODE" \
+            --batch-size "$BATCH_SIZE" \
+            --kata-deploy-chart "$KATA_DEPLOY_CHART" \
             --results-dir "$RESULTS_DIR"
 
       - name: "TC-01: Basic Upgrade"
@@ -76,7 +101,10 @@ jobs:
           ./run_tests.sh \
             --runtime "$RUNTIME" --tc 1 --skip-setup --skip-cluster-delete \
             --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
-            --to-image "$TO_IMAGE" --results-dir "$RESULTS_DIR"
+            --to-image "$TO_IMAGE" \
+            --deployment-mode "$DEPLOYMENT_MODE" --batch-size "$BATCH_SIZE" \
+            --kata-deploy-chart "$KATA_DEPLOY_CHART" \
+            --results-dir "$RESULTS_DIR"
 
       - name: "TC-02: Auto-Rollback Verification Failure"
         if: success() || failure()
@@ -86,7 +114,10 @@ jobs:
           ./run_tests.sh \
             --runtime "$RUNTIME" --tc 2 --skip-setup --skip-cluster-delete \
             --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
-            --to-image "$TO_IMAGE" --results-dir "$RESULTS_DIR"
+            --to-image "$TO_IMAGE" \
+            --deployment-mode "$DEPLOYMENT_MODE" --batch-size "$BATCH_SIZE" \
+            --kata-deploy-chart "$KATA_DEPLOY_CHART" \
+            --results-dir "$RESULTS_DIR"
 
       - name: "TC-03: Manual Rollback"
         if: success() || failure()
@@ -96,7 +127,10 @@ jobs:
           ./run_tests.sh \
             --runtime "$RUNTIME" --tc 3 --skip-setup --skip-cluster-delete \
             --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
-            --to-image "$TO_IMAGE" --results-dir "$RESULTS_DIR"
+            --to-image "$TO_IMAGE" \
+            --deployment-mode "$DEPLOYMENT_MODE" --batch-size "$BATCH_SIZE" \
+            --kata-deploy-chart "$KATA_DEPLOY_CHART" \
+            --results-dir "$RESULTS_DIR"
 
       - name: "TC-04: Taint and Combined Selection"
         if: success() || failure()
@@ -106,7 +140,10 @@ jobs:
           ./run_tests.sh \
             --runtime "$RUNTIME" --tc 4 --skip-setup --skip-cluster-delete \
             --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
-            --to-image "$TO_IMAGE" --results-dir "$RESULTS_DIR"
+            --to-image "$TO_IMAGE" \
+            --deployment-mode "$DEPLOYMENT_MODE" --batch-size "$BATCH_SIZE" \
+            --kata-deploy-chart "$KATA_DEPLOY_CHART" \
+            --results-dir "$RESULTS_DIR"
 
       - name: "TC-05: Upgrade with Drain"
         if: success() || failure()
@@ -116,7 +153,10 @@ jobs:
           ./run_tests.sh \
             --runtime "$RUNTIME" --tc 5 --skip-setup --skip-cluster-delete \
             --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
-            --to-image "$TO_IMAGE" --results-dir "$RESULTS_DIR"
+            --to-image "$TO_IMAGE" \
+            --deployment-mode "$DEPLOYMENT_MODE" --batch-size "$BATCH_SIZE" \
+            --kata-deploy-chart "$KATA_DEPLOY_CHART" \
+            --results-dir "$RESULTS_DIR"
 
       - name: "TC-06: Custom Image Upgrade"
         if: success() || failure()
@@ -126,7 +166,10 @@ jobs:
           ./run_tests.sh \
             --runtime "$RUNTIME" --tc 6 --skip-setup --skip-cluster-delete \
             --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
-            --to-image "$TO_IMAGE" --results-dir "$RESULTS_DIR"
+            --to-image "$TO_IMAGE" \
+            --deployment-mode "$DEPLOYMENT_MODE" --batch-size "$BATCH_SIZE" \
+            --kata-deploy-chart "$KATA_DEPLOY_CHART" \
+            --results-dir "$RESULTS_DIR"
 
       - name: "TC-07: Verification Pod Override"
         if: success() || failure()
@@ -136,7 +179,10 @@ jobs:
           ./run_tests.sh \
             --runtime "$RUNTIME" --tc 7 --skip-setup --skip-cluster-delete \
             --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
-            --to-image "$TO_IMAGE" --results-dir "$RESULTS_DIR"
+            --to-image "$TO_IMAGE" \
+            --deployment-mode "$DEPLOYMENT_MODE" --batch-size "$BATCH_SIZE" \
+            --kata-deploy-chart "$KATA_DEPLOY_CHART" \
+            --results-dir "$RESULTS_DIR"
 
       - name: "TC-08: No Matching Nodes"
         if: success() || failure()
@@ -146,7 +192,10 @@ jobs:
           ./run_tests.sh \
             --runtime "$RUNTIME" --tc 8 --skip-setup --skip-cluster-delete \
             --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
-            --to-image "$TO_IMAGE" --results-dir "$RESULTS_DIR"
+            --to-image "$TO_IMAGE" \
+            --deployment-mode "$DEPLOYMENT_MODE" --batch-size "$BATCH_SIZE" \
+            --kata-deploy-chart "$KATA_DEPLOY_CHART" \
+            --results-dir "$RESULTS_DIR"
 
       - name: "TC-09: Timeout Auto-Rollback"
         if: success() || failure()
@@ -156,7 +205,10 @@ jobs:
           ./run_tests.sh \
             --runtime "$RUNTIME" --tc 9 --skip-setup --skip-cluster-delete \
             --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
-            --to-image "$TO_IMAGE" --results-dir "$RESULTS_DIR"
+            --to-image "$TO_IMAGE" \
+            --deployment-mode "$DEPLOYMENT_MODE" --batch-size "$BATCH_SIZE" \
+            --kata-deploy-chart "$KATA_DEPLOY_CHART" \
+            --results-dir "$RESULTS_DIR"
 
       - name: "TC-10: Same Version Re-upgrade (Idempotency)"
         if: success() || failure()
@@ -166,7 +218,10 @@ jobs:
           ./run_tests.sh \
             --runtime "$RUNTIME" --tc 10 --skip-setup --skip-cluster-delete \
             --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
-            --to-image "$TO_IMAGE" --results-dir "$RESULTS_DIR"
+            --to-image "$TO_IMAGE" \
+            --deployment-mode "$DEPLOYMENT_MODE" --batch-size "$BATCH_SIZE" \
+            --kata-deploy-chart "$KATA_DEPLOY_CHART" \
+            --results-dir "$RESULTS_DIR"
 
       - name: "TC-11: No Workload Disruption"
         if: success() || failure()
@@ -176,7 +231,10 @@ jobs:
           ./run_tests.sh \
             --runtime "$RUNTIME" --tc 11 --skip-setup --skip-cluster-delete \
             --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
-            --to-image "$TO_IMAGE" --results-dir "$RESULTS_DIR"
+            --to-image "$TO_IMAGE" \
+            --deployment-mode "$DEPLOYMENT_MODE" --batch-size "$BATCH_SIZE" \
+            --kata-deploy-chart "$KATA_DEPLOY_CHART" \
+            --results-dir "$RESULTS_DIR"
 
       - name: "TC-12: DaemonSet Target Node Only"
         if: success() || failure()
@@ -186,7 +244,10 @@ jobs:
           ./run_tests.sh \
             --runtime "$RUNTIME" --tc 12 --skip-setup --skip-cluster-delete \
             --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
-            --to-image "$TO_IMAGE" --results-dir "$RESULTS_DIR"
+            --to-image "$TO_IMAGE" \
+            --deployment-mode "$DEPLOYMENT_MODE" --batch-size "$BATCH_SIZE" \
+            --kata-deploy-chart "$KATA_DEPLOY_CHART" \
+            --results-dir "$RESULTS_DIR"
 
       - name: "TC-13: Node-by-Node Sequential"
         if: success() || failure()
@@ -196,7 +257,10 @@ jobs:
           ./run_tests.sh \
             --runtime "$RUNTIME" --tc 13 --skip-setup --skip-cluster-delete \
             --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
-            --to-image "$TO_IMAGE" --results-dir "$RESULTS_DIR"
+            --to-image "$TO_IMAGE" \
+            --deployment-mode "$DEPLOYMENT_MODE" --batch-size "$BATCH_SIZE" \
+            --kata-deploy-chart "$KATA_DEPLOY_CHART" \
+            --results-dir "$RESULTS_DIR"
 
       - name: "TC-14: Partial Failure Stops"
         if: success() || failure()
@@ -206,7 +270,10 @@ jobs:
           ./run_tests.sh \
             --runtime "$RUNTIME" --tc 14 --skip-setup --skip-cluster-delete \
             --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
-            --to-image "$TO_IMAGE" --results-dir "$RESULTS_DIR"
+            --to-image "$TO_IMAGE" \
+            --deployment-mode "$DEPLOYMENT_MODE" --batch-size "$BATCH_SIZE" \
+            --kata-deploy-chart "$KATA_DEPLOY_CHART" \
+            --results-dir "$RESULTS_DIR"
 
       - name: "TC-15: Drain Multi-Node"
         if: success() || failure()
@@ -216,7 +283,62 @@ jobs:
           ./run_tests.sh \
             --runtime "$RUNTIME" --tc 15 --skip-setup --skip-cluster-delete \
             --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
-            --to-image "$TO_IMAGE" --results-dir "$RESULTS_DIR"
+            --to-image "$TO_IMAGE" \
+            --deployment-mode "$DEPLOYMENT_MODE" --batch-size "$BATCH_SIZE" \
+            --kata-deploy-chart "$KATA_DEPLOY_CHART" \
+            --results-dir "$RESULTS_DIR"
+
+      - name: "TC-16: Wave-Based Batch Upgrade"
+        if: success() || failure()
+        continue-on-error: true
+        working-directory: tests/e2e
+        run: |
+          ./run_tests.sh \
+            --runtime "$RUNTIME" --tc 16 --skip-setup --skip-cluster-delete \
+            --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
+            --to-image "$TO_IMAGE" \
+            --deployment-mode "$DEPLOYMENT_MODE" --batch-size "$BATCH_SIZE" \
+            --kata-deploy-chart "$KATA_DEPLOY_CHART" \
+            --results-dir "$RESULTS_DIR"
+
+      - name: "TC-17: Reject Deployment-Mode Switch"
+        if: success() || failure()
+        continue-on-error: true
+        working-directory: tests/e2e
+        run: |
+          ./run_tests.sh \
+            --runtime "$RUNTIME" --tc 17 --skip-setup --skip-cluster-delete \
+            --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
+            --to-image "$TO_IMAGE" \
+            --deployment-mode "$DEPLOYMENT_MODE" --batch-size "$BATCH_SIZE" \
+            --kata-deploy-chart "$KATA_DEPLOY_CHART" \
+            --results-dir "$RESULTS_DIR"
+
+      - name: "TC-18: Auto-Detect Deployment Mode"
+        if: success() || failure()
+        continue-on-error: true
+        working-directory: tests/e2e
+        run: |
+          ./run_tests.sh \
+            --runtime "$RUNTIME" --tc 18 --skip-setup --skip-cluster-delete \
+            --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
+            --to-image "$TO_IMAGE" \
+            --deployment-mode "$DEPLOYMENT_MODE" --batch-size "$BATCH_SIZE" \
+            --kata-deploy-chart "$KATA_DEPLOY_CHART" \
+            --results-dir "$RESULTS_DIR"
+
+      - name: "TC-19: Wave Partial Failure Rollback"
+        if: success() || failure()
+        continue-on-error: true
+        working-directory: tests/e2e
+        run: |
+          ./run_tests.sh \
+            --runtime "$RUNTIME" --tc 19 --skip-setup --skip-cluster-delete \
+            --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
+            --to-image "$TO_IMAGE" \
+            --deployment-mode "$DEPLOYMENT_MODE" --batch-size "$BATCH_SIZE" \
+            --kata-deploy-chart "$KATA_DEPLOY_CHART" \
+            --results-dir "$RESULTS_DIR"
 
       - name: Generate reports
         if: always()
