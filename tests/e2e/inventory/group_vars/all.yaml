@@ -12,9 +12,28 @@ cluster_memory: 32768
 cluster_cpus: 8
 cluster_disk: 100
 
+# -- Deployment mode --
+# kata-deploy deployment model under test: daemonset | job
+#   daemonset - long-running DaemonSet (chart default; min version 3.27.0)
+#   job       - dispatcher-driven per-node install Jobs (min version 3.32.0)
+#
+# NOTE: full job-mode functional testing is deferred until kata-deploy 3.32.0 is
+# released. No published chart exposes job mode yet, so selecting 'job' fails fast
+# at the install preflight unless kata_deploy_chart points at a job-capable chart.
+# The daemonset default exercises mode-detection, the migration guard, and batching.
+deployment_mode: "daemonset"
+
+# Number of nodes upgraded per wave (1 = strict node-by-node).
+batch_size: 1
+
+# First kata-deploy chart version that ships job mode. Used by tests that
+# exercise the daemonset<->job migration guard (kept in sync with the
+# workflow's hardcoded MIN_JOB_VERSION).
+min_job_version: "3.32.0"
+
 # -- Kata Versions --
 # FROM = initial install version; TO = upgrade target.
-# Minimum supported: 3.27.0 (lifecycle-manager requirement).
+# Minimum supported: 3.27.0 (daemonset) / 3.32.0 (job).
 kata_from_version: "3.27.0"
 kata_to_version: "3.27.0"
 
@@ -22,6 +41,10 @@ kata_to_version: "3.27.0"
 # Empty string = use default chart image for that version.
 kata_from_image: ""
 kata_to_image: "quay.io/kata-containers/kata-deploy-ci:kata-containers-latest"
+
+# job mode: override for the kata-deploy-job-dispatcher image (empty = chart default).
+# When testing a CI kata-deploy image, point this at the matching dispatcher image.
+kata_job_dispatcher_image: ""
 
 # -- Runtime class (set per iteration by run_tests.sh) --
 kata_runtime_class: "kata-qemu"
@@ -33,6 +56,15 @@ argo_namespace: "argo"
 # -- Helm --
 helm_release: "kata-deploy"
 helm_namespace: "kube-system"
+
+# kata-deploy chart source for the INITIAL install in the e2e harness.
+#   - An OCI/HTTP ref (default) is pulled at kata_from_version.
+#   - A local path (e.g. a kata-containers checkout) is used as-is, ignoring
+#     kata_from_version, so you can test job mode before it ships in a release:
+#       kata_deploy_chart: "/path/to/kata-containers/tools/packaging/kata-deploy/helm-chart/kata-deploy"
+# Job mode requires a chart that exposes the `deploymentMode` value; the install
+# role probes for it and fails fast with guidance if it is missing.
+kata_deploy_chart: "oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy"
 
 # -- Lifecycle manager chart --
 # Path to local chart (relative to repository root).

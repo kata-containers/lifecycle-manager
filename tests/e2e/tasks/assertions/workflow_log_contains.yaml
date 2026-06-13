@@ -1,0 +1,19 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Assert that the latest argo workflow's logs contain an expected substring.
+# Required vars:
+#   expected_substring - text that must appear somewhere in the workflow logs
+---
+- name: Get latest workflow logs
+  ansible.builtin.shell: |
+    argo logs @latest -n {{ argo_namespace }} 2>&1 || true
+  register: _wf_log_text
+  changed_when: false
+
+- name: Assert workflow logs contain expected text
+  ansible.builtin.assert:
+    that:
+      - expected_substring in _wf_log_text.stdout
+    fail_msg: "Workflow logs do not contain '{{ expected_substring }}'"
+    success_msg: "Workflow logs contain '{{ expected_substring }}'"

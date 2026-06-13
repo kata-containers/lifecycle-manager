@@ -1,0 +1,109 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# TC-19: Wave Partial Failure Rollback (batch-size=2)
+#
+# Labels both worker nodes and submits one workflow with batch-size=2, using a
+# verification pod that always fails on worker_node_b. Both nodes are processed
+# in a single wave; verification of worker_node_b fails, so the wave's failed
+# node is rolled back and the workflow stops with a failure. This exercises the
+# multi-node failure path in verify-batch (per-node rollback within a wave).
+#
+# Assertions are kept to the unambiguous facts: the workflow fails, the failed
+# node is rolled back to its previous version and annotated rolled-back, and both
+# nodes remain schedulable.
+---
+- name: "TC-19: Wave Partial Failure Rollback (batch-size=2)"
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Reset environment
+      ansible.builtin.include_tasks: ../tasks/reset_environment.yaml
+
+    - name: Base64-encode the partial-fail verification pod manifest
+      ansible.builtin.shell:
+        cmd: >-
+          sed 's/\${FAIL_NODE}/{{ worker_node_b }}/g'
+          {{ playbook_dir }}/../files/partial-fail-verification-pod.yaml | base64 -w0
+      register: _tc19_verification_pod_b64
+      changed_when: false
+
+    - name: Record kata binary version on worker_node_b before upgrade
+      ansible.builtin.include_tasks: ../tasks/assertions/kata_binary_version.yaml
+      vars:
+        node_name: "{{ worker_node_b }}"
+        version_fact_name: "_kata_version_before_b"
+        version_label: "worker_node_b before upgrade"
+
+    - name: Label worker_node_a for upgrade window
+      ansible.builtin.command:
+        cmd: >-
+          kubectl label node {{ worker_node_a }}
+          katacontainers.io/kata-lifecycle-manager-window=true
+          --overwrite
+
+    - name: Label worker_node_b for upgrade window
+      ansible.builtin.command:
+        cmd: >-
+          kubectl label node {{ worker_node_b }}
+          katacontainers.io/kata-lifecycle-manager-window=true
+          --overwrite
+
+    - name: Build extra submit args
+      ansible.builtin.set_fact:
+        _tc19_extra_args: >-
+          -p verification-pod={{ _tc19_verification_pod_b64.stdout }}
+          {{ '-p helm-set-values="' + kata_to_helm_set_values + '"'
+             if kata_to_helm_set_values | default('') | length > 0
+             else '' }}
+
+    - name: Submit upgrade workflow with batch-size=2
+      ansible.builtin.include_tasks: ../tasks/submit_upgrade.yaml
+      vars:
+        target_version: "{{ kata_to_version }}"
+        node_selector: "katacontainers.io/kata-lifecycle-manager-window=true"
+        submit_batch_size: 2
+        extra_submit_args: "{{ _tc19_extra_args }}"
+
+    - name: Wait for workflow to finish
+      ansible.builtin.include_tasks: ../tasks/wait_workflow.yaml
+
+    - name: Assert workflow failed
+      ansible.builtin.include_tasks: ../tasks/assertions/workflow_status.yaml
+      vars:
+        expected_status: "Failed"
+
+    - name: Assert worker_node_b annotation status is rolled-back
+      ansible.builtin.include_tasks: ../tasks/assertions/node_annotation.yaml
+      vars:
+        node_name: "{{ worker_node_b }}"
+        annotation_key: "katacontainers.io/kata-lifecycle-manager-status"
+        expected_value: "rolled-back"
+
+    - name: Record kata binary version on worker_node_b after workflow
+      ansible.builtin.include_tasks: ../tasks/assertions/kata_binary_version.yaml
+      vars:
+        node_name: "{{ worker_node_b }}"
+        version_fact_name: "_kata_version_after_b"
+        version_label: "worker_node_b after workflow"
+
+    - name: Assert kata binary version unchanged on worker_node_b (rolled back)
+      ansible.builtin.assert:
+        that:
+          - _kata_version_before_b == _kata_version_after_b
+        fail_msg: >-
+          kata-runtime version changed on worker_node_b (should have rolled back):
+          before='{{ _kata_version_before_b }}', after='{{ _kata_version_after_b }}'
+        success_msg: >-
+          kata-runtime version unchanged on worker_node_b (rolled back correctly):
+          before='{{ _kata_version_before_b }}', after='{{ _kata_version_after_b }}'
+
+    - name: Assert worker_node_a is schedulable
+      ansible.builtin.include_tasks: ../tasks/assertions/node_schedulable.yaml
+      vars:
+        node_name: "{{ worker_node_a }}"
+
+    - name: Assert worker_node_b is schedulable
+      ansible.builtin.include_tasks: ../tasks/assertions/node_schedulable.yaml
+      vars:
+        node_name: "{{ worker_node_b }}"
