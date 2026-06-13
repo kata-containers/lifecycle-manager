@@ -5,6 +5,14 @@ SPDX-License-Identifier: Apache-2.0
 Argo WorkflowTemplate for orchestrating kata-deploy upgrades.
 Uses native Argo resource templates where possible, and standard
 helm/kubectl images for operations requiring those tools.
+
+Supports both kata-deploy deployment models:
+  - daemonset: roll one pod per node via updateStrategy.type=OnDelete
+  - job:       drive the kata-deploy dispatcher one wave (batch) at a time
+
+Upgrades happen in waves of up to `batch-size` nodes; each wave is verified and,
+on failure, the wave's failed node(s) are rolled back and the workflow stops
+(fail-fast between waves). batch-size=1 reproduces strict node-by-node.
 */}}
 {{- if not .Values.defaults.verificationPod }}
 {{- fail "defaults.verificationPod is required. Provide a pod spec that validates your Kata deployment using --set-file defaults.verificationPod=./your-pod.yaml" }}
@@ -34,6 +42,12 @@ spec:
       - name: helm-namespace
         value: {{ .Values.defaults.helmNamespace | quote }}
         description: "Namespace where kata-deploy is installed"
+      - name: deployment-mode
+        value: {{ .Values.defaults.deploymentMode | quote }}
+        description: "kata-deploy deployment model: auto | daemonset | job (auto detects from the release)"
+      - name: batch-size
+        value: {{ .Values.defaults.batchSize | quote }}
+        description: "Number of nodes upgraded per wave (1 = strict node-by-node)"
       - name: node-selector
         value: {{ .Values.defaults.nodeSelector | quote }}
         description: "Label selector for nodes to upgrade (optional if using taint selection)"
@@ -80,13 +94,16 @@ spec:
                   value: "{{`{{steps.get-nodes.outputs.parameters.nodes}}`}}"
                 - name: node-count
                   value: "{{`{{steps.get-nodes.outputs.parameters.node-count}}`}}"
-        # Run helm upgrade ONCE at the start (not per-node)
-        # This sets updateStrategy=OnDelete so pods don't auto-restart.
-        # Skip when node-count is 0 to avoid upgrading the release with no nodes to process.
+                - name: deployment-mode
+                  value: "{{`{{steps.validate-prerequisites.outputs.parameters.resolved-mode}}`}}"
+        # daemonset mode only: run helm upgrade ONCE at the start (sets
+        # updateStrategy=OnDelete so pods don't auto-restart). In job mode the
+        # per-wave apply step runs helm upgrade scoped to the wave's nodes.
+        # Skip when node-count is 0 to avoid upgrading the release with no nodes.
         - - name: helm-upgrade-once
             template: helm-upgrade-global
-            when: "{{`{{steps.get-nodes.outputs.parameters.node-count}}`}} != 0"
-        - - name: deploy-nodes-sequentially
+            when: "{{`{{steps.get-nodes.outputs.parameters.node-count}}`}} != 0 && '{{`{{steps.validate-prerequisites.outputs.parameters.resolved-mode}}`}}' == 'daemonset'"
+        - - name: deploy-nodes-in-waves
             template: deploy-node-chain
             when: "{{`{{steps.get-nodes.outputs.parameters.node-count}}`}} != 0"
             arguments:
@@ -95,13 +112,26 @@ spec:
                   value: "{{`{{steps.get-nodes.outputs.parameters.nodes}}`}}"
                 - name: current-index
                   value: "0"
+                - name: deployment-mode
+                  value: "{{`{{steps.validate-prerequisites.outputs.parameters.resolved-mode}}`}}"
+                - name: previous-version
+                  value: "{{`{{steps.validate-prerequisites.outputs.parameters.previous-version}}`}}"
         - - name: summary
             template: print-summary
 
     # =========================================================================
-    # CHECK PREREQUISITES (fail fast if verification pod not configured)
+    # CHECK PREREQUISITES (resolve deployment mode, validate version, capture
+    # the pre-upgrade chart version for job-mode rollback)
     # =========================================================================
     - name: check-prerequisites
+      outputs:
+        parameters:
+          - name: resolved-mode
+            valueFrom:
+              path: /tmp/resolved-mode.txt
+          - name: previous-version
+            valueFrom:
+              path: /tmp/previous-version.txt
       nodeSelector:
         node-role.kubernetes.io/control-plane: ""
       tolerations:
@@ -113,7 +143,7 @@ spec:
           operator: Exists
       script:
         image: "{{`{{workflow.parameters.utils-image}}`}}"
-        command: [sh]
+        command: [bash]
         source: |
           set -e
 
@@ -121,8 +151,13 @@ spec:
           NS="{{`{{workflow.parameters.helm-namespace}}`}}"
           VERIFICATION_POD="{{`{{workflow.parameters.verification-pod}}`}}"
           TARGET_VERSION="{{`{{workflow.parameters.target-version}}`}}"
-          MIN_KATA_VERSION="3.27.0"
-
+          REQUESTED_MODE="{{`{{workflow.parameters.deployment-mode}}`}}"
+          BATCH_SIZE="{{`{{workflow.parameters.batch-size}}`}}"
+          # Minimum kata-deploy chart versions for each deployment model:
+          #   daemonset: 3.27.0 ships updateStrategy.type=OnDelete in the chart
+          #   job:       3.32.0 is the first release shipping job mode (PR #13155)
+          MIN_DAEMONSET_VERSION="3.27.0"
+          MIN_JOB_VERSION="3.32.0"
           HELM_SET_VALUES="{{`{{workflow.parameters.helm-set-values}}`}}"
 
           echo "=============================================="
@@ -130,23 +165,141 @@ spec:
           echo "=============================================="
           echo ""
 
-          # Require kata-deploy chart >= 3.27.0 (chart must support updateStrategy in template)
-          echo "Checking target version (kata-deploy chart >= $MIN_KATA_VERSION required)..."
-          LOWEST=$(printf '%s\n%s' "$MIN_KATA_VERSION" "$TARGET_VERSION" | sort -V | head -1)
-          if [ "$LOWEST" != "$MIN_KATA_VERSION" ]; then
+          # Check kata-deploy release exists (required for upgrades)
+          echo "Checking kata-deploy Helm release..."
+          if helm status "$RELEASE" -n "$NS" &>/dev/null; then
+            CURRENT_VERSION=$(helm get metadata "$RELEASE" -n "$NS" -o json 2>/dev/null | grep -o '"version":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
+            echo "✓ Found Helm release: $RELEASE (chart version: $CURRENT_VERSION)"
+          else
             echo ""
-            echo "ERROR: target-version must be $MIN_KATA_VERSION or higher (got: $TARGET_VERSION)"
+            echo "ERROR: Helm release '$RELEASE' not found in namespace '$NS'"
             echo ""
-            echo "kata-lifecycle-manager relies on the kata-deploy Helm chart to set"
-            echo "DaemonSet updateStrategy.type=OnDelete. This is supported from kata-deploy 3.27.0."
-            echo ""
+            echo "Make sure kata-deploy is installed via Helm before running upgrade."
             exit 1
           fi
-          echo "✓ Target version $TARGET_VERSION >= $MIN_KATA_VERSION"
+
+          # Record the pre-upgrade chart version so job-mode rollback can
+          # reinstall it on a failed node (helm rollback does not re-run the
+          # kata-deploy dispatcher in job mode).
+          echo "${CURRENT_VERSION}" > /tmp/previous-version.txt
+
+          # Detect the deployment mode of the CURRENT release from its values.
+          # Charts < 3.32.0 have no deploymentMode key, so an empty result means
+          # the release is running as a DaemonSet.
+          DETECTED_MODE=$(helm get values "$RELEASE" -n "$NS" -a -o json 2>/dev/null | grep -o '"deploymentMode":"[^"]*"' | cut -d'"' -f4 || echo "")
+          if [ -z "$DETECTED_MODE" ]; then
+            DETECTED_MODE="daemonset"
+          fi
+
+          # Resolve the effective mode (auto follows the current release).
+          if [ "$REQUESTED_MODE" = "auto" ]; then
+            MODE="$DETECTED_MODE"
+            echo "✓ Auto-detected deployment mode: $MODE"
+          else
+            MODE="$REQUESTED_MODE"
+            echo "✓ Deployment mode (explicit): $MODE (current release: $DETECTED_MODE)"
+          fi
+          if [ "$MODE" != "daemonset" ] && [ "$MODE" != "job" ]; then
+            echo ""
+            echo "ERROR: unsupported deployment-mode '$MODE' (expected: auto | daemonset | job)"
+            exit 1
+          fi
+
+          # Validate batch size
+          if ! printf '%s' "$BATCH_SIZE" | grep -Eq '^[1-9][0-9]*$'; then
+            echo ""
+            echo "ERROR: batch-size must be a positive integer (got: '$BATCH_SIZE')"
+            exit 1
+          fi
+          echo "✓ Batch size: $BATCH_SIZE node(s) per wave"
+
+          # Version gate (mode-specific)
+          if [ "$MODE" = "daemonset" ]; then
+            echo "Checking target version (kata-deploy chart >= $MIN_DAEMONSET_VERSION required for daemonset mode)..."
+            LOWEST=$(printf '%s\n%s' "$MIN_DAEMONSET_VERSION" "$TARGET_VERSION" | sort -V | head -1)
+            if [ "$LOWEST" != "$MIN_DAEMONSET_VERSION" ]; then
+              echo ""
+              echo "ERROR: target-version must be $MIN_DAEMONSET_VERSION or higher (got: $TARGET_VERSION)"
+              echo ""
+              echo "daemonset mode relies on the kata-deploy Helm chart setting DaemonSet"
+              echo "updateStrategy.type=OnDelete, which is supported from kata-deploy 3.27.0."
+              echo ""
+              exit 1
+            fi
+            echo "✓ Target version $TARGET_VERSION >= $MIN_DAEMONSET_VERSION"
+          else
+            echo "Checking target version (job mode requires kata-deploy chart >= $MIN_JOB_VERSION)..."
+            LOWEST=$(printf '%s\n%s' "$MIN_JOB_VERSION" "$TARGET_VERSION" | sort -V | head -1)
+            if [ "$LOWEST" != "$MIN_JOB_VERSION" ]; then
+              echo ""
+              echo "ERROR: target-version must be $MIN_JOB_VERSION or higher for job mode (got: $TARGET_VERSION)"
+              echo ""
+              echo "job mode is supported by the kata-deploy chart from $MIN_JOB_VERSION onward."
+              echo ""
+              exit 1
+            fi
+            echo "✓ Target version $TARGET_VERSION >= $MIN_JOB_VERSION"
+          fi
+
+          # Guard against an in-flight deployment-mode switch. kata-lifecycle-manager
+          # upgrades nodes in scoped waves and assumes the release is ALREADY in the
+          # requested mode. Flipping deploymentMode on a live release adds/removes the
+          # kata-deploy DaemonSet cluster-wide in a single step, which cannot be done
+          # wave-by-wave and is therefore out of scope for a controlled upgrade.
+          if [ "$MODE" != "$DETECTED_MODE" ]; then
+            echo ""
+            echo "==================================================================="
+            echo " ERROR: cannot switch deployment mode during a controlled upgrade"
+            echo "==================================================================="
+            echo ""
+            echo "Requested mode : $MODE"
+            echo "Current release: $DETECTED_MODE (chart $CURRENT_VERSION)"
+            echo ""
+            echo "kata-lifecycle-manager upgrades nodes in scoped waves and assumes the"
+            echo "kata-deploy release is already running in '$MODE' mode. Switching a live"
+            echo "release between daemonset and job mode changes the whole release at once"
+            echo "(the DaemonSet is added/removed cluster-wide), which cannot be performed"
+            echo "wave-by-wave and is outside the scope of a controlled upgrade."
+            echo ""
+            if [ "$MODE" = "job" ]; then
+              echo "To migrate daemonset -> job, perform the one-time switch yourself:"
+              echo ""
+              echo "  helm upgrade $RELEASE \\"
+              echo "    oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy \\"
+              echo "    --namespace $NS --version $TARGET_VERSION --reuse-values \\"
+              echo "    --set deploymentMode=job --set verification.pod="
+              echo ""
+              echo "Notes:"
+              echo "  - job mode requires kata-deploy >= $MIN_JOB_VERSION, so this switch also"
+              echo "    moves every targeted node to $TARGET_VERSION at once (it cannot be"
+              echo "    staged); subsequent upgrades are again wave-by-wave."
+              echo "  - It removes the kata-deploy DaemonSet and installs via per-node Jobs."
+              echo "  - Already-installed host artifacts are not removed, so running Kata"
+              echo "    workloads keep working across the switch."
+              echo ""
+              echo "Then confirm nodes are labeled katacontainers.io/kata-runtime=true and"
+              echo "re-submit this workflow with deployment-mode=job (or auto)."
+            else
+              echo "To migrate job -> daemonset, perform the one-time switch yourself:"
+              echo ""
+              echo "  helm upgrade $RELEASE \\"
+              echo "    oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy \\"
+              echo "    --namespace $NS --version $TARGET_VERSION --reuse-values \\"
+              echo "    --set deploymentMode=daemonset --set updateStrategy.type=OnDelete \\"
+              echo "    --set verification.pod="
+              echo ""
+              echo "Then re-submit this workflow with deployment-mode=daemonset (or auto)."
+            fi
+            echo ""
+            echo "Alternatively, submit with deployment-mode=auto to keep the current"
+            echo "mode ($DETECTED_MODE)."
+            echo "==================================================================="
+            exit 1
+          fi
+          echo "$MODE" > /tmp/resolved-mode.txt
 
           # Check verification pod availability
           echo "Checking verification pod configuration..."
-          
           if [ -n "$VERIFICATION_POD" ]; then
             echo "✓ Verification pod configured"
           else
@@ -158,19 +311,6 @@ spec:
             echo "This should not happen if kata-lifecycle-manager was installed correctly."
             echo "Reinstall with: helm upgrade kata-lifecycle-manager oci://ghcr.io/kata-containers/kata-lifecycle-manager-charts/kata-lifecycle-manager ... --set-file defaults.verificationPod=<path>"
             echo ""
-            exit 1
-          fi
-
-          # Check kata-deploy release exists
-          echo "Checking kata-deploy Helm release..."
-          if helm status "$RELEASE" -n "$NS" &>/dev/null; then
-            CURRENT_VERSION=$(helm get metadata "$RELEASE" -n "$NS" -o json 2>/dev/null | grep -o '"version":"[^"]*"' | cut -d'"' -f4 || echo "unknown")
-            echo "✓ Found Helm release: $RELEASE (chart version: $CURRENT_VERSION)"
-          else
-            echo ""
-            echo "ERROR: Helm release '$RELEASE' not found in namespace '$NS'"
-            echo ""
-            echo "Make sure kata-deploy is installed via Helm before running upgrade."
             exit 1
           fi
 
@@ -191,6 +331,7 @@ spec:
         parameters:
           - name: nodes-json
           - name: node-count
+          - name: deployment-mode
       nodeSelector:
         node-role.kubernetes.io/control-plane: ""
       tolerations:
@@ -208,6 +349,8 @@ spec:
 
           NODES_JSON='{{`{{inputs.parameters.nodes-json}}`}}'
           NODE_COUNT={{`{{inputs.parameters.node-count}}`}}
+          MODE="{{`{{inputs.parameters.deployment-mode}}`}}"
+          BATCH_SIZE="{{`{{workflow.parameters.batch-size}}`}}"
           VERSION="{{`{{workflow.parameters.target-version}}`}}"
           HELM_SET_VALUES="{{`{{workflow.parameters.helm-set-values}}`}}"
 
@@ -215,12 +358,13 @@ spec:
           echo "        KATA CONTAINERS UPGRADE PLAN"
           echo "=============================================="
           echo ""
-          echo "Target Version: $VERSION"
+          echo "Target Version:  $VERSION"
+          echo "Deployment mode: $MODE"
+          echo "Batch size:      $BATCH_SIZE node(s) per wave"
           if [ -n "$HELM_SET_VALUES" ]; then
-            echo "Helm overrides: $HELM_SET_VALUES"
+            echo "Helm overrides:  $HELM_SET_VALUES"
           fi
-          echo "Total Nodes:    $NODE_COUNT"
-          echo "Mode:           Sequential (one at a time)"
+          echo "Total Nodes:     $NODE_COUNT"
           echo ""
           echo "Nodes to upgrade (in order):"
           echo "----------------------------------------------"
@@ -233,97 +377,9 @@ spec:
 
           echo ""
           echo "----------------------------------------------"
-          echo "Upgrade will stop immediately on first failure"
+          echo "Upgrade proceeds in waves of up to $BATCH_SIZE node(s)."
+          echo "It stops immediately on the first wave with a verification failure."
           echo "=============================================="
-
-    # =========================================================================
-    # SEQUENTIAL NODE CHAIN (recursive: upgrades one node, then next)
-    # Stops immediately on first failure - no mixed fleet possible
-    # =========================================================================
-    - name: deploy-node-chain
-      inputs:
-        parameters:
-          - name: nodes-json
-          - name: current-index
-      steps:
-        # Extract current node info
-        - - name: node-info
-            template: get-node-at-index
-            arguments:
-              parameters:
-                - name: nodes-json
-                  value: "{{`{{inputs.parameters.nodes-json}}`}}"
-                - name: index
-                  value: "{{`{{inputs.parameters.current-index}}`}}"
-        # Upgrade current node (shows all sub-steps: prepare, cordon, upgrade, verify...)
-        - - name: upgrade
-            template: deploy-single-node
-            arguments:
-              parameters:
-                - name: node-name
-                  value: "{{`{{steps.node-info.outputs.parameters.node-name}}`}}"
-        # Continue to next node only if this one succeeded and more nodes exist
-        - - name: next
-            template: deploy-node-chain
-            when: "{{`{{steps.node-info.outputs.parameters.has-more}}`}} == true"
-            arguments:
-              parameters:
-                - name: nodes-json
-                  value: "{{`{{inputs.parameters.nodes-json}}`}}"
-                - name: current-index
-                  value: "{{`{{steps.node-info.outputs.parameters.next-index}}`}}"
-
-    # =========================================================================
-    # GET NODE AT INDEX (helper for sequential chain)
-    # =========================================================================
-    - name: get-node-at-index
-      inputs:
-        parameters:
-          - name: nodes-json
-          - name: index
-      outputs:
-        parameters:
-          - name: node-name
-            valueFrom:
-              path: /tmp/node-name.txt
-          - name: has-more
-            valueFrom:
-              path: /tmp/has-more.txt
-          - name: next-index
-            valueFrom:
-              path: /tmp/next-index.txt
-      nodeSelector:
-        node-role.kubernetes.io/control-plane: ""
-      tolerations:
-        - key: node.kubernetes.io/unschedulable
-          operator: Exists
-        - key: node.kubernetes.io/disk-pressure
-          operator: Exists
-        - key: node-role.kubernetes.io/control-plane
-          operator: Exists
-      script:
-        image: "{{`{{workflow.parameters.utils-image}}`}}"
-        command: [sh]
-        source: |
-          set -e
-          apk add --no-cache -q jq 2>/dev/null || true
-          NODES_JSON='{{`{{inputs.parameters.nodes-json}}`}}'
-          INDEX={{`{{inputs.parameters.index}}`}}
-
-          NODE=$(echo "$NODES_JSON" | jq -r ".[$INDEX]")
-          TOTAL=$(echo "$NODES_JSON" | jq 'length')
-          NEXT=$((INDEX + 1))
-
-          echo "$NODE" > /tmp/node-name.txt
-          echo "$NEXT" > /tmp/next-index.txt
-
-          if [ "$NEXT" -lt "$TOTAL" ]; then
-            echo "true" > /tmp/has-more.txt
-          else
-            echo "false" > /tmp/has-more.txt
-          fi
-
-          echo "=== Node $((INDEX + 1)) of $TOTAL: $NODE ==="
 
     # =========================================================================
     # GET TARGET NODES (supports label selector, taint selector, or both)
@@ -427,96 +483,159 @@ spec:
           echo "$NODE_LIST"
 
     # =========================================================================
-    # UPGRADE SINGLE NODE
+    # WAVE CHAIN (recursive: upgrades one batch of nodes, then the next)
+    # Stops immediately on the first wave with a failure - no mixed fleet beyond
+    # the already-verified waves.
     # =========================================================================
-    - name: deploy-single-node
+    - name: deploy-node-chain
       inputs:
         parameters:
-          - name: node-name
+          - name: nodes-json
+          - name: current-index
+          - name: deployment-mode
+          - name: previous-version
+      steps:
+        # Extract the current wave of nodes
+        - - name: batch-info
+            template: get-node-batch
+            arguments:
+              parameters:
+                - name: nodes-json
+                  value: "{{`{{inputs.parameters.nodes-json}}`}}"
+                - name: index
+                  value: "{{`{{inputs.parameters.current-index}}`}}"
+        # Upgrade the current wave (prepare, cordon, apply, wait, verify)
+        - - name: upgrade
+            template: deploy-node-batch
+            arguments:
+              parameters:
+                - name: batch-nodes
+                  value: "{{`{{steps.batch-info.outputs.parameters.batch-nodes}}`}}"
+                - name: deployment-mode
+                  value: "{{`{{inputs.parameters.deployment-mode}}`}}"
+                - name: previous-version
+                  value: "{{`{{inputs.parameters.previous-version}}`}}"
+        # Continue to the next wave only if this one succeeded and more remain
+        - - name: next
+            template: deploy-node-chain
+            when: "{{`{{steps.batch-info.outputs.parameters.has-more}}`}} == true"
+            arguments:
+              parameters:
+                - name: nodes-json
+                  value: "{{`{{inputs.parameters.nodes-json}}`}}"
+                - name: current-index
+                  value: "{{`{{steps.batch-info.outputs.parameters.next-index}}`}}"
+                - name: deployment-mode
+                  value: "{{`{{inputs.parameters.deployment-mode}}`}}"
+                - name: previous-version
+                  value: "{{`{{inputs.parameters.previous-version}}`}}"
+
+    # =========================================================================
+    # GET NODE BATCH (helper for the wave chain: slices up to batch-size nodes)
+    # =========================================================================
+    - name: get-node-batch
+      inputs:
+        parameters:
+          - name: nodes-json
+          - name: index
+      outputs:
+        parameters:
+          - name: batch-nodes
+            valueFrom:
+              path: /tmp/batch-nodes.json
+          - name: has-more
+            valueFrom:
+              path: /tmp/has-more.txt
+          - name: next-index
+            valueFrom:
+              path: /tmp/next-index.txt
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+        - key: node.kubernetes.io/unschedulable
+          operator: Exists
+        - key: node.kubernetes.io/disk-pressure
+          operator: Exists
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+      script:
+        image: "{{`{{workflow.parameters.utils-image}}`}}"
+        command: [sh]
+        source: |
+          set -e
+          apk add --no-cache -q jq 2>/dev/null || true
+          NODES_JSON='{{`{{inputs.parameters.nodes-json}}`}}'
+          INDEX={{`{{inputs.parameters.index}}`}}
+          BATCH_SIZE={{`{{workflow.parameters.batch-size}}`}}
+
+          TOTAL=$(echo "$NODES_JSON" | jq 'length')
+          END=$((INDEX + BATCH_SIZE))
+          BATCH=$(echo "$NODES_JSON" | jq -c ".[$INDEX:$END]")
+
+          echo "$BATCH" > /tmp/batch-nodes.json
+          echo "$END" > /tmp/next-index.txt
+
+          if [ "$END" -lt "$TOTAL" ]; then
+            echo "true" > /tmp/has-more.txt
+            LAST="$END"
+          else
+            echo "false" > /tmp/has-more.txt
+            LAST="$TOTAL"
+          fi
+
+          echo "=== Wave: nodes $((INDEX + 1))-${LAST} of $TOTAL ==="
+          echo "$BATCH" | jq -r '.[]'
+
+    # =========================================================================
+    # UPGRADE A WAVE OF NODES
+    # =========================================================================
+    - name: deploy-node-batch
+      inputs:
+        parameters:
+          - name: batch-nodes
+          - name: deployment-mode
+          - name: previous-version
       steps:
         - - name: prepare
-            template: prepare-node
+            template: prepare-cordon-batch
             arguments:
               parameters:
-                - name: node-name
-                  value: "{{`{{inputs.parameters.node-name}}`}}"
-        - - name: cordon
-            template: cordon-node
+                - name: batch-nodes
+                  value: "{{`{{inputs.parameters.batch-nodes}}`}}"
+        - - name: apply
+            template: apply-batch
             arguments:
               parameters:
-                - name: node-name
-                  value: "{{`{{inputs.parameters.node-name}}`}}"
-        - - name: drain
-            template: drain-node
-            when: "{{`{{workflow.parameters.drain-enabled}}`}} == true"
-            arguments:
-              parameters:
-                - name: node-name
-                  value: "{{`{{inputs.parameters.node-name}}`}}"
-        - - name: upgrade
-            template: helm-upgrade
-            arguments:
-              parameters:
-                - name: node-name
-                  value: "{{`{{inputs.parameters.node-name}}`}}"
+                - name: batch-nodes
+                  value: "{{`{{inputs.parameters.batch-nodes}}`}}"
+                - name: deployment-mode
+                  value: "{{`{{inputs.parameters.deployment-mode}}`}}"
         - - name: wait-ready
-            template: wait-kata-ready
+            template: wait-batch-ready
             arguments:
               parameters:
-                - name: node-name
-                  value: "{{`{{inputs.parameters.node-name}}`}}"
+                - name: batch-nodes
+                  value: "{{`{{inputs.parameters.batch-nodes}}`}}"
+                - name: deployment-mode
+                  value: "{{`{{inputs.parameters.deployment-mode}}`}}"
         - - name: verify-and-complete
-            template: verify-and-complete-node
+            template: verify-batch
             arguments:
               parameters:
-                - name: node-name
-                  value: "{{`{{inputs.parameters.node-name}}`}}"
+                - name: batch-nodes
+                  value: "{{`{{inputs.parameters.batch-nodes}}`}}"
+                - name: deployment-mode
+                  value: "{{`{{inputs.parameters.deployment-mode}}`}}"
+                - name: previous-version
+                  value: "{{`{{inputs.parameters.previous-version}}`}}"
 
     # =========================================================================
-    # PREPARE NODE
+    # PREPARE + CORDON (+ optional DRAIN) every node in the wave
     # =========================================================================
-    - name: prepare-node
+    - name: prepare-cordon-batch
       inputs:
         parameters:
-          - name: node-name
-      resource:
-        action: patch
-        mergeStrategy: merge
-        manifest: |
-          apiVersion: v1
-          kind: Node
-          metadata:
-            name: "{{`{{inputs.parameters.node-name}}`}}"
-            annotations:
-              katacontainers.io/kata-lifecycle-manager-status: "preparing"
-
-    # =========================================================================
-    # CORDON NODE
-    # =========================================================================
-    - name: cordon-node
-      inputs:
-        parameters:
-          - name: node-name
-      resource:
-        action: patch
-        mergeStrategy: merge
-        manifest: |
-          apiVersion: v1
-          kind: Node
-          metadata:
-            name: "{{`{{inputs.parameters.node-name}}`}}"
-            annotations:
-              katacontainers.io/kata-lifecycle-manager-status: "cordoned"
-          spec:
-            unschedulable: true
-
-    # =========================================================================
-    # DRAIN NODE (optional, only runs if drain-enabled is true)
-    # =========================================================================
-    - name: drain-node
-      inputs:
-        parameters:
-          - name: node-name
+          - name: batch-nodes
       nodeSelector:
         node-role.kubernetes.io/control-plane: ""
       tolerations:
@@ -531,29 +650,43 @@ spec:
         command: [bash]
         source: |
           set -e
-          NODE="{{`{{inputs.parameters.node-name}}`}}"
-          TIMEOUT="{{`{{workflow.parameters.drain-timeout}}`}}"
+          apk add --no-cache -q jq 2>/dev/null || true
+          NODES_JSON='{{`{{inputs.parameters.batch-nodes}}`}}'
+          DRAIN_ENABLED="{{`{{workflow.parameters.drain-enabled}}`}}"
+          DRAIN_TIMEOUT="{{`{{workflow.parameters.drain-timeout}}`}}"
+          NODES=$(echo "$NODES_JSON" | jq -r '.[]')
 
-          # On failure: mark node as failed and uncordon
-          cleanup_on_failure() {
-            echo "ERROR: Drain failed, cleaning up node $NODE"
-            kubectl annotate node "$NODE" --overwrite katacontainers.io/kata-lifecycle-manager-status="failed" || true
-            kubectl uncordon "$NODE" || true
-          }
-          trap cleanup_on_failure EXIT
+          for NODE in $NODES; do
+            kubectl annotate node "$NODE" --overwrite katacontainers.io/kata-lifecycle-manager-status="preparing"
+          done
 
-          kubectl annotate node "$NODE" --overwrite katacontainers.io/kata-lifecycle-manager-status="draining"
-          kubectl drain "$NODE" \
-            --ignore-daemonsets \
-            --delete-emptydir-data \
-            --force \
-            --timeout="$TIMEOUT"
+          for NODE in $NODES; do
+            echo "Cordoning node $NODE..."
+            kubectl annotate node "$NODE" --overwrite katacontainers.io/kata-lifecycle-manager-status="cordoned"
+            kubectl cordon "$NODE"
+          done
 
-          # Success - remove the trap
-          trap - EXIT
+          if [ "$DRAIN_ENABLED" = "true" ]; then
+            for NODE in $NODES; do
+              echo "Draining node $NODE..."
+              kubectl annotate node "$NODE" --overwrite katacontainers.io/kata-lifecycle-manager-status="draining"
+              if ! kubectl drain "$NODE" \
+                  --ignore-daemonsets \
+                  --delete-emptydir-data \
+                  --force \
+                  --timeout="$DRAIN_TIMEOUT"; then
+                echo "ERROR: Drain failed on $NODE, cleaning up wave"
+                for N in $NODES; do
+                  kubectl annotate node "$N" --overwrite katacontainers.io/kata-lifecycle-manager-status="failed" || true
+                  kubectl uncordon "$N" || true
+                done
+                exit 1
+              fi
+            done
+          fi
 
     # =========================================================================
-    # HELM UPGRADE (runs ONCE at the start, not per-node)
+    # HELM UPGRADE (daemonset mode only - runs ONCE at the start)
     # Requires kata-deploy chart >= 3.27.0 so updateStrategy is applied by the chart.
     # =========================================================================
     - name: helm-upgrade-global
@@ -577,7 +710,7 @@ spec:
           CHART="oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy"
           HELM_SET_VALUES="{{`{{workflow.parameters.helm-set-values}}`}}"
 
-          echo "=== Helm upgrade (once for all nodes) ==="
+          echo "=== Helm upgrade (daemonset mode, once for all nodes) ==="
           echo "Release: $RELEASE"
           echo "Target version: $VERSION (kata-deploy 3.27.0+ required for OnDelete strategy)"
           if [ -n "$HELM_SET_VALUES" ]; then
@@ -607,12 +740,17 @@ spec:
           echo "restart automatically. Each node's pod will be restarted during node processing."
 
     # =========================================================================
-    # TRIGGER NODE UPGRADE (delete pod on specific node)
+    # APPLY A WAVE
+    #   daemonset: delete the kata-deploy pod on each node in the wave
+    #   job:       one helm upgrade scoped to the wave's nodes; the kata-deploy
+    #              dispatcher installs the whole wave concurrently
+    #              (job.parallelism = wave size)
     # =========================================================================
-    - name: helm-upgrade
+    - name: apply-batch
       inputs:
         parameters:
-          - name: node-name
+          - name: batch-nodes
+          - name: deployment-mode
       nodeSelector:
         node-role.kubernetes.io/control-plane: ""
       tolerations:
@@ -627,44 +765,85 @@ spec:
         command: [bash]
         source: |
           set -e
-          NODE="{{`{{inputs.parameters.node-name}}`}}"
+          apk add --no-cache -q jq 2>/dev/null || true
+          MODE="{{`{{inputs.parameters.deployment-mode}}`}}"
+          NODES_JSON='{{`{{inputs.parameters.batch-nodes}}`}}'
           NS="{{`{{workflow.parameters.helm-namespace}}`}}"
-
+          RELEASE="{{`{{workflow.parameters.helm-release}}`}}"
+          VERSION="{{`{{workflow.parameters.target-version}}`}}"
           TAINT_KEY="{{`{{workflow.parameters.node-taint-key}}`}}"
+          HELM_SET_VALUES="{{`{{workflow.parameters.helm-set-values}}`}}"
+          CHART="oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy"
+          NODES=$(echo "$NODES_JSON" | jq -r '.[]')
 
-          kubectl annotate node "$NODE" --overwrite katacontainers.io/kata-lifecycle-manager-status="deploying"
+          for NODE in $NODES; do
+            kubectl annotate node "$NODE" --overwrite katacontainers.io/kata-lifecycle-manager-status="deploying"
+            # Remove the selection taint (if any) so the node behaves like a
+            # normal target for the duration of the upgrade. Restored on verify.
+            if [[ -n "$TAINT_KEY" ]]; then
+              kubectl taint node "$NODE" "${TAINT_KEY}-" 2>/dev/null || true
+            fi
+          done
 
-          # Remove the selection taint before deleting the pod so the
-          # DaemonSet controller can schedule the replacement.
-          if [[ -n "$TAINT_KEY" ]]; then
-            kubectl taint node "$NODE" "${TAINT_KEY}-" 2>/dev/null || true
-          fi
-
-          # Delete the kata-deploy pod on THIS specific node to trigger the upgrade.
-          # With updateStrategy=OnDelete, the pod won't restart until we delete it.
-          echo "Deleting kata-deploy pod on node $NODE to trigger upgrade..."
-          POD=$(kubectl get pods -n "$NS" -l name=kata-deploy \
-            --field-selector spec.nodeName="$NODE" \
-            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-          if [ -n "$POD" ]; then
-            kubectl delete pod "$POD" -n "$NS" --wait=false
-            echo "Deleted pod $POD, new pod will start with new image"
+          if [ "$MODE" = "daemonset" ]; then
+            # With updateStrategy=OnDelete, deleting the pod triggers recreation
+            # with the new image on just that node.
+            for NODE in $NODES; do
+              echo "Deleting kata-deploy pod on node $NODE to trigger upgrade..."
+              POD=$(kubectl get pods -n "$NS" -l name=kata-deploy \
+                --field-selector spec.nodeName="$NODE" \
+                -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+              if [ -n "$POD" ]; then
+                kubectl delete pod "$POD" -n "$NS" --wait=false
+                echo "Deleted pod $POD, new pod will start with new image"
+              else
+                echo "Warning: No kata-deploy pod found on node $NODE"
+              fi
+            done
           else
-            echo "Warning: No kata-deploy pod found on node $NODE"
+            # job mode: a single scoped helm upgrade. The kata-deploy install
+            # dispatcher (a post-upgrade hook Job) enumerates exactly these nodes
+            # (job.nodes takes verbatim precedence over selectors) and stamps out
+            # one per-node install Job each. Helm blocks until the dispatcher Job
+            # completes, i.e. until every per-node install Job has succeeded.
+            NODE_LIST=$(echo "$NODES" | paste -sd, -)
+            # Install the whole wave concurrently: the wave is cordoned and
+            # verified together, so there is no benefit to staggering installs.
+            PARALLELISM=$(echo "$NODES" | wc -l | tr -d ' ')
+            echo "=== Helm upgrade (job mode, wave: $NODE_LIST) ==="
+            echo "Target version: $VERSION, parallelism: $PARALLELISM"
+            HELM_ARGS=(
+              --namespace "$NS"
+              --install
+              --version "$VERSION"
+              --reset-then-reuse-values
+              --set "deploymentMode=job"
+              --set "job.nodes={${NODE_LIST}}"
+              --set "job.parallelism=${PARALLELISM}"
+              --set "verification.pod="
+            )
+            if [ -n "$HELM_SET_VALUES" ]; then
+              HELM_ARGS+=(--set "$HELM_SET_VALUES")
+            fi
+            helm upgrade "$RELEASE" "$CHART" "${HELM_ARGS[@]}"
+            echo "Wave installed (dispatcher reported success for all nodes)."
           fi
 
           # Allow the Argo executor sidecar to finish initialising before the
-          # main container exits.  Without this pause, very short-lived steps
-          # can race with the executor and report "Unknown (exit code 255)".
+          # main container exits, avoiding "Unknown (exit code 255)" races.
           sleep 10
 
     # =========================================================================
-    # WAIT FOR KATA-DEPLOY READY
+    # WAIT FOR A WAVE TO BE READY
+    #   daemonset: each node's kata-deploy pod becomes Ready
+    #   job:       each node is labeled katacontainers.io/kata-runtime=true
+    #              (the install Jobs already completed during apply-batch)
     # =========================================================================
-    - name: wait-kata-ready
+    - name: wait-batch-ready
       inputs:
         parameters:
-          - name: node-name
+          - name: batch-nodes
+          - name: deployment-mode
       nodeSelector:
         node-role.kubernetes.io/control-plane: ""
       tolerations:
@@ -679,41 +858,78 @@ spec:
         command: [bash]
         source: |
           set -e
-          NODE="{{`{{inputs.parameters.node-name}}`}}"
+          apk add --no-cache -q jq 2>/dev/null || true
+          MODE="{{`{{inputs.parameters.deployment-mode}}`}}"
+          NODES_JSON='{{`{{inputs.parameters.batch-nodes}}`}}'
           NS="{{`{{workflow.parameters.helm-namespace}}`}}"
+          NODES=$(echo "$NODES_JSON" | jq -r '.[]')
 
-          # On failure: mark node as failed and uncordon
-          cleanup_on_failure() {
-            echo "ERROR: Timed out waiting for kata-deploy, cleaning up node $NODE"
+          fail_node() {
+            local NODE="$1"
+            echo "ERROR: node $NODE not ready, cleaning up"
             kubectl annotate node "$NODE" --overwrite katacontainers.io/kata-lifecycle-manager-status="failed" || true
             kubectl uncordon "$NODE" || true
           }
-          trap cleanup_on_failure EXIT
 
-          for i in $(seq 1 60); do
-            POD=$(kubectl get pods -n "$NS" -l name=kata-deploy \
-              --field-selector spec.nodeName="$NODE" \
-              -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-            if [[ -n "$POD" ]]; then
-              if kubectl wait pod "$POD" -n "$NS" --for=condition=Ready --timeout=10s 2>/dev/null; then
-                echo "kata-deploy pod $POD is ready"
-                trap - EXIT
-                sleep 10
-                exit 0
+          if [ "$MODE" = "daemonset" ]; then
+            for NODE in $NODES; do
+              ready=false
+              for i in $(seq 1 60); do
+                POD=$(kubectl get pods -n "$NS" -l name=kata-deploy \
+                  --field-selector spec.nodeName="$NODE" \
+                  -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+                if [[ -n "$POD" ]]; then
+                  if kubectl wait pod "$POD" -n "$NS" --for=condition=Ready --timeout=10s 2>/dev/null; then
+                    echo "kata-deploy pod $POD on $NODE is ready"
+                    ready=true
+                    break
+                  fi
+                fi
+                echo "Waiting for $NODE... ($i/60)"
+                sleep 5
+              done
+              if [ "$ready" != "true" ]; then
+                fail_node "$NODE"
+                exit 1
               fi
-            fi
-            echo "Waiting... ($i/60)"
-            sleep 5
-          done
-          exit 1
+            done
+          else
+            # job mode: installs already completed (helm blocked on the
+            # dispatcher hook). Confirm each node carries the kata-runtime label
+            # set by the install pipeline's label stage.
+            for NODE in $NODES; do
+              labeled=false
+              for i in $(seq 1 24); do
+                VAL=$(kubectl get node "$NODE" \
+                  -o jsonpath='{.metadata.labels.katacontainers\.io/kata-runtime}' 2>/dev/null || echo "")
+                if [ "$VAL" = "true" ]; then
+                  echo "Node $NODE labeled katacontainers.io/kata-runtime=true"
+                  labeled=true
+                  break
+                fi
+                echo "Waiting for $NODE label... ($i/24)"
+                sleep 5
+              done
+              if [ "$labeled" != "true" ]; then
+                fail_node "$NODE"
+                exit 1
+              fi
+            done
+          fi
+
+          sleep 10
 
     # =========================================================================
-    # VERIFY AND COMPLETE NODE (with automatic rollback on failure)
+    # VERIFY A WAVE (with automatic rollback of failed nodes)
+    # Verification pods for all wave nodes run concurrently; if any node fails,
+    # its node is rolled back and the workflow stops (fail-fast).
     # =========================================================================
-    - name: verify-and-complete-node
+    - name: verify-batch
       inputs:
         parameters:
-          - name: node-name
+          - name: batch-nodes
+          - name: deployment-mode
+          - name: previous-version
       nodeSelector:
         node-role.kubernetes.io/control-plane: ""
       tolerations:
@@ -728,7 +944,10 @@ spec:
         command: [bash]
         source: |
           # Don't use set -e - we need to reach rollback logic even on errors
-          NODE="{{`{{inputs.parameters.node-name}}`}}"
+          apk add --no-cache -q jq 2>/dev/null || true
+          MODE="{{`{{inputs.parameters.deployment-mode}}`}}"
+          NODES_JSON='{{`{{inputs.parameters.batch-nodes}}`}}'
+          PREVIOUS_VERSION="{{`{{inputs.parameters.previous-version}}`}}"
           VERIFY_NS="{{`{{workflow.parameters.verification-namespace}}`}}"
           RELEASE="{{`{{workflow.parameters.helm-release}}`}}"
           NS="{{`{{workflow.parameters.helm-namespace}}`}}"
@@ -736,129 +955,167 @@ spec:
           VERIFICATION_POD="{{`{{workflow.parameters.verification-pod}}`}}"
           TAINT_KEY="{{`{{workflow.parameters.node-taint-key}}`}}"
           TAINT_VALUE="{{`{{workflow.parameters.node-taint-value}}`}}"
-          # Pod names must be DNS-1123: lowercase, hyphens only (no underscores)
-          NODE_SAFE=$(echo "$NODE" | tr '[:upper:]' '[:lower:]' | tr '_' '-')
-          TEST_POD="kata-verify-${NODE_SAFE}-$(date +%s)"
+          HELM_SET_VALUES="{{`{{workflow.parameters.helm-set-values}}`}}"
+          CHART="oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy"
+          TIMEOUT=180
+          NODES=$(echo "$NODES_JSON" | jq -r '.[]')
 
-          kubectl annotate node "$NODE" --overwrite katacontainers.io/kata-lifecycle-manager-status="verifying"
-
-          # Decode verification pod spec (base64-encoded); no trailing newline, strip CRLF
-          echo "Using verification pod from workflow parameters"
-          printf '%s' "$VERIFICATION_POD" | base64 -d | tr -d '\r' > /tmp/verify-pod.yaml
-
-          # Apply verification pod with placeholder substitution (escape NODE for sed)
-          NODE_ESCAPED=$(echo "$NODE" | sed 's/[&/\]/\\&/g')
-          sed -i "s|\${NODE}|$NODE_ESCAPED|g" /tmp/verify-pod.yaml
-          sed -i "s|\${TEST_POD}|$TEST_POD|g" /tmp/verify-pod.yaml
-
-          if ! kubectl apply -n "$VERIFY_NS" -f /tmp/verify-pod.yaml; then
-            echo "ERROR: Failed to create verification pod"
-            VERIFY_SUCCESS=false
-          fi
-
-          # Cleanup function for verification pod
-          cleanup_pod() {
-            kubectl delete pod "$TEST_POD" -n "$VERIFY_NS" --ignore-not-found --wait=false
-          }
-          trap cleanup_pod EXIT
-
-          # Wait for verification pod to complete (only if pod was created)
-          # This catches all failure modes:
-          # - Pod stuck in Pending/ContainerCreating (runtime can't start VM)
-          # - Pod crashes immediately (containerd/CRI-O config issues)
-          # - Pod times out (resource issues, image pull failures)
-          # - Pod exits with non-zero code (verification logic failed)
-          if [ "${VERIFY_SUCCESS:-}" != "false" ]; then
-            VERIFY_SUCCESS=false
-            if kubectl wait pod "$TEST_POD" -n "$VERIFY_NS" --for=jsonpath='{.status.phase}'=Succeeded --timeout=180s; then
-              echo "=== Verification Succeeded ==="
-              kubectl logs "$TEST_POD" -n "$VERIFY_NS" || true
-              VERIFY_SUCCESS=true
-            else
-              echo "=== Verification Failed ==="
-              echo ""
-              echo "Pod status:"
-              kubectl get pod "$TEST_POD" -n "$VERIFY_NS" -o wide || true
-              echo ""
-              echo "Pod events and details:"
-              kubectl describe pod "$TEST_POD" -n "$VERIFY_NS" || true
-              echo ""
-              echo "Pod logs (if available):"
-              kubectl logs "$TEST_POD" -n "$VERIFY_NS" || true
-            fi
-          fi
-
-          # Clean up verification pod
-          cleanup_pod
-          trap - EXIT
-
-          # Re-apply the selection taint that was removed in helm-upgrade so
-          # the node remains selectable for future taint-based operations.
           restore_taint() {
+            local NODE="$1"
             if [[ -n "$TAINT_KEY" ]]; then
-              local effect="NoSchedule"
               if [[ -n "$TAINT_VALUE" ]]; then
-                kubectl taint node "$NODE" "${TAINT_KEY}=${TAINT_VALUE}:${effect}" 2>/dev/null || true
+                kubectl taint node "$NODE" "${TAINT_KEY}=${TAINT_VALUE}:NoSchedule" 2>/dev/null || true
               else
-                kubectl taint node "$NODE" "${TAINT_KEY}:${effect}" 2>/dev/null || true
+                kubectl taint node "$NODE" "${TAINT_KEY}:NoSchedule" 2>/dev/null || true
               fi
               echo "Re-applied taint ${TAINT_KEY} on node $NODE"
             fi
           }
 
-          if [ "$VERIFY_SUCCESS" = "true" ]; then
-            # Success path: uncordon and mark complete
+          mkdir -p /tmp/verify
+          # Create one verification pod per node; they run concurrently.
+          for NODE in $NODES; do
+            kubectl annotate node "$NODE" --overwrite katacontainers.io/kata-lifecycle-manager-status="verifying"
+            NODE_SAFE=$(echo "$NODE" | tr '[:upper:]' '[:lower:]' | tr '_' '-')
+            TEST_POD="kata-verify-${NODE_SAFE}-$(date +%s)-${RANDOM}"
+            echo "$TEST_POD" > "/tmp/verify/${NODE}.pod"
+            printf '%s' "$VERIFICATION_POD" | base64 -d | tr -d '\r' > "/tmp/verify/${NODE}.yaml"
+            NODE_ESCAPED=$(echo "$NODE" | sed 's/[&/\]/\\&/g')
+            sed -i "s|\${NODE}|$NODE_ESCAPED|g" "/tmp/verify/${NODE}.yaml"
+            sed -i "s|\${TEST_POD}|$TEST_POD|g" "/tmp/verify/${NODE}.yaml"
+            if ! kubectl apply -n "$VERIFY_NS" -f "/tmp/verify/${NODE}.yaml"; then
+              echo "ERROR: Failed to create verification pod for $NODE"
+              echo "failed" > "/tmp/verify/${NODE}.result"
+            fi
+          done
+
+          # Poll all pods until each Succeeded/Failed or the timeout elapses.
+          start_time=$(date +%s)
+          while true; do
+            pending=false
+            for NODE in $NODES; do
+              [ -f "/tmp/verify/${NODE}.result" ] && continue
+              TEST_POD=$(cat "/tmp/verify/${NODE}.pod")
+              phase=$(kubectl get pod "$TEST_POD" -n "$VERIFY_NS" -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+              if [ "$phase" = "Succeeded" ]; then
+                echo "ok" > "/tmp/verify/${NODE}.result"
+              elif [ "$phase" = "Failed" ]; then
+                echo "failed" > "/tmp/verify/${NODE}.result"
+              else
+                pending=true
+              fi
+            done
+            [ "$pending" != "true" ] && break
+            now=$(date +%s)
+            if [ $((now - start_time)) -ge "$TIMEOUT" ]; then
+              for NODE in $NODES; do
+                [ -f "/tmp/verify/${NODE}.result" ] || echo "failed" > "/tmp/verify/${NODE}.result"
+              done
+              break
+            fi
+            sleep 5
+          done
+
+          # Collect results and print diagnostics for failures.
+          FAILED_NODES=""
+          OK_NODES=""
+          for NODE in $NODES; do
+            TEST_POD=$(cat "/tmp/verify/${NODE}.pod" 2>/dev/null || echo "")
+            RESULT=$(cat "/tmp/verify/${NODE}.result" 2>/dev/null || echo "failed")
+            if [ "$RESULT" = "ok" ]; then
+              echo "=== Verification Succeeded on $NODE ==="
+              kubectl logs "$TEST_POD" -n "$VERIFY_NS" 2>/dev/null || true
+              OK_NODES="$OK_NODES $NODE"
+            else
+              echo "=== Verification Failed on $NODE ==="
+              kubectl get pod "$TEST_POD" -n "$VERIFY_NS" -o wide 2>/dev/null || true
+              kubectl describe pod "$TEST_POD" -n "$VERIFY_NS" 2>/dev/null || true
+              kubectl logs "$TEST_POD" -n "$VERIFY_NS" 2>/dev/null || true
+              FAILED_NODES="$FAILED_NODES $NODE"
+            fi
+            [ -n "$TEST_POD" ] && kubectl delete pod "$TEST_POD" -n "$VERIFY_NS" --ignore-not-found --wait=false
+          done
+
+          # Successful nodes: uncordon, restore taint, mark completed.
+          for NODE in $OK_NODES; do
             echo "Uncordoning node $NODE..."
             kubectl uncordon "$NODE"
-            restore_taint
+            restore_taint "$NODE"
             kubectl annotate node "$NODE" --overwrite \
               katacontainers.io/kata-lifecycle-manager-status="completed" \
               katacontainers.io/kata-current-version="$VERSION"
             echo "Node $NODE upgrade completed successfully"
+          done
+
+          if [ -z "$FAILED_NODES" ]; then
+            echo "Wave verified successfully: $OK_NODES"
             sleep 10
             exit 0
-          else
-            # Failure path: automatic rollback
-            echo "Initiating automatic rollback for node $NODE..."
+          fi
+
+          # Failure path: roll back the failed nodes, then fail the workflow.
+          echo "Initiating rollback for failed node(s):$FAILED_NODES"
+          for NODE in $FAILED_NODES; do
             kubectl annotate node "$NODE" --overwrite katacontainers.io/kata-lifecycle-manager-status="rolling-back"
+          done
 
+          if [ "$MODE" = "daemonset" ]; then
             helm rollback "$RELEASE" -n "$NS" --wait --timeout 10m
-
-            # Delete the pod on this node to trigger rollback restart
-            # (updateStrategy=OnDelete means pods don't restart automatically)
-            echo "Deleting kata-deploy pod on node $NODE to apply rollback..."
-            POD=$(kubectl get pods -n "$NS" -l name=kata-deploy \
-              --field-selector spec.nodeName="$NODE" \
-              -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-            if [ -n "$POD" ]; then
-              kubectl delete pod "$POD" -n "$NS" --wait=false
-            fi
-
-            # Wait for kata-deploy to be ready after rollback
-            echo "Waiting for kata-deploy to be ready after rollback..."
-            for i in $(seq 1 60); do
+            for NODE in $FAILED_NODES; do
+              echo "Deleting kata-deploy pod on node $NODE to apply rollback..."
               POD=$(kubectl get pods -n "$NS" -l name=kata-deploy \
                 --field-selector spec.nodeName="$NODE" \
                 -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
               if [ -n "$POD" ]; then
-                if kubectl wait pod "$POD" -n "$NS" --for=condition=Ready --timeout=10s 2>/dev/null; then
-                  echo "kata-deploy pod $POD is ready after rollback"
+                kubectl delete pod "$POD" -n "$NS" --wait=false
+              fi
+            done
+            for NODE in $FAILED_NODES; do
+              for i in $(seq 1 60); do
+                POD=$(kubectl get pods -n "$NS" -l name=kata-deploy \
+                  --field-selector spec.nodeName="$NODE" \
+                  -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+                if [ -n "$POD" ] && kubectl wait pod "$POD" -n "$NS" --for=condition=Ready --timeout=10s 2>/dev/null; then
+                  echo "kata-deploy pod $POD on $NODE ready after rollback"
                   break
                 fi
-              fi
-              echo "Waiting for rollback to complete... ($i/60)"
-              sleep 5
+                echo "Waiting for rollback on $NODE... ($i/60)"
+                sleep 5
+              done
             done
-
-            # Uncordon and mark as rolled back
-            kubectl uncordon "$NODE"
-            restore_taint
-            kubectl annotate node "$NODE" --overwrite katacontainers.io/kata-lifecycle-manager-status="rolled-back"
-            echo "Node $NODE rolled back to previous version"
-
-            # Exit with error so workflow shows the failure
-            exit 1
+          else
+            # job mode: helm rollback does not re-run the dispatcher, so reinstall
+            # the previous version on the failed nodes via a scoped upgrade.
+            if [ -z "$PREVIOUS_VERSION" ] || [ "$PREVIOUS_VERSION" = "unknown" ]; then
+              echo "ERROR: previous version unknown; cannot roll back job-mode nodes automatically"
+            else
+              FAILED_LIST=$(echo "$FAILED_NODES" | xargs | tr ' ' ',')
+              echo "Reinstalling $PREVIOUS_VERSION on:$FAILED_NODES"
+              HELM_ARGS=(
+                --namespace "$NS"
+                --install
+                --version "$PREVIOUS_VERSION"
+                --reset-then-reuse-values
+                --set "deploymentMode=job"
+                --set "job.nodes={${FAILED_LIST}}"
+                --set "verification.pod="
+              )
+              if [ -n "$HELM_SET_VALUES" ]; then
+                HELM_ARGS+=(--set "$HELM_SET_VALUES")
+              fi
+              helm upgrade "$RELEASE" "$CHART" "${HELM_ARGS[@]}" || true
+            fi
           fi
+
+          for NODE in $FAILED_NODES; do
+            kubectl uncordon "$NODE"
+            restore_taint "$NODE"
+            kubectl annotate node "$NODE" --overwrite katacontainers.io/kata-lifecycle-manager-status="rolled-back"
+            echo "Node $NODE rolled back"
+          done
+
+          # Exit with error so the workflow stops before the next wave.
+          exit 1
 
     # =========================================================================
     # PRINT SUMMARY
@@ -885,11 +1142,16 @@ spec:
 
     # =========================================================================
     # ROLLBACK (can be called manually)
+    #   --entrypoint rollback-node -p node-name=<node> [-p deployment-mode=...]
+    #     [-p rollback-version=<chart-version>]  (job mode target; auto-detected
+    #     from helm history when empty)
     # =========================================================================
     - name: rollback-node
       inputs:
         parameters:
           - name: node-name
+          - name: rollback-version
+            value: ""
       nodeSelector:
         node-role.kubernetes.io/control-plane: ""
       tolerations:
@@ -904,50 +1166,84 @@ spec:
         command: [bash]
         source: |
           set -e
+          apk add --no-cache -q jq 2>/dev/null || true
           NODE="{{`{{inputs.parameters.node-name}}`}}"
+          ROLLBACK_VERSION="{{`{{inputs.parameters.rollback-version}}`}}"
           RELEASE="{{`{{workflow.parameters.helm-release}}`}}"
           NS="{{`{{workflow.parameters.helm-namespace}}`}}"
+          REQUESTED_MODE="{{`{{workflow.parameters.deployment-mode}}`}}"
           TAINT_KEY="{{`{{workflow.parameters.node-taint-key}}`}}"
           TAINT_VALUE="{{`{{workflow.parameters.node-taint-value}}`}}"
+          HELM_SET_VALUES="{{`{{workflow.parameters.helm-set-values}}`}}"
+          CHART="oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy"
 
-          apk add --no-cache -q kubectl
+          # Resolve deployment mode (auto = detect from the release values)
+          MODE="$REQUESTED_MODE"
+          if [ "$MODE" = "auto" ]; then
+            MODE=$(helm get values "$RELEASE" -n "$NS" -a -o json 2>/dev/null | grep -o '"deploymentMode":"[^"]*"' | cut -d'"' -f4 || echo "")
+            [ -z "$MODE" ] && MODE="daemonset"
+          fi
+          echo "Rollback mode: $MODE"
+
           kubectl annotate node "$NODE" --overwrite katacontainers.io/kata-lifecycle-manager-status="rolling-back"
 
-          helm rollback "$RELEASE" -n "$NS" --wait --timeout 10m
-
-          # Delete the pod on this node to trigger rollback restart
-          # (updateStrategy=OnDelete means pods don't restart automatically)
-          echo "Deleting kata-deploy pod on node $NODE to apply rollback..."
-          POD=$(kubectl get pods -n "$NS" -l name=kata-deploy \
-            --field-selector spec.nodeName="$NODE" \
-            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-          if [ -n "$POD" ]; then
-            kubectl delete pod "$POD" -n "$NS" --wait=false
-          fi
-
-          # Wait for new pod to be ready
-          echo "Waiting for kata-deploy to be ready after rollback..."
-          for i in $(seq 1 60); do
+          if [ "$MODE" = "daemonset" ]; then
+            helm rollback "$RELEASE" -n "$NS" --wait --timeout 10m
+            echo "Deleting kata-deploy pod on node $NODE to apply rollback..."
             POD=$(kubectl get pods -n "$NS" -l name=kata-deploy \
               --field-selector spec.nodeName="$NODE" \
               -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
             if [ -n "$POD" ]; then
-              if kubectl wait pod "$POD" -n "$NS" --for=condition=Ready --timeout=10s 2>/dev/null; then
+              kubectl delete pod "$POD" -n "$NS" --wait=false
+            fi
+            echo "Waiting for kata-deploy to be ready after rollback..."
+            for i in $(seq 1 60); do
+              POD=$(kubectl get pods -n "$NS" -l name=kata-deploy \
+                --field-selector spec.nodeName="$NODE" \
+                -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+              if [ -n "$POD" ] && kubectl wait pod "$POD" -n "$NS" --for=condition=Ready --timeout=10s 2>/dev/null; then
                 echo "kata-deploy pod $POD is ready after rollback"
                 break
               fi
+              echo "Waiting... ($i/60)"
+              sleep 5
+            done
+          else
+            # job mode: reinstall the previous chart version on this node. A plain
+            # helm rollback would not re-run the dispatcher, so it would not revert
+            # the on-host artifacts.
+            if [ -z "$ROLLBACK_VERSION" ]; then
+              # Pick the chart version of the revision before the current one.
+              ROLLBACK_VERSION=$(helm history "$RELEASE" -n "$NS" -o json 2>/dev/null \
+                | jq -r 'sort_by(.revision) | .[-2].chart // ""' \
+                | sed 's/.*-//')
             fi
-            echo "Waiting... ($i/60)"
-            sleep 5
-          done
+            if [ -z "$ROLLBACK_VERSION" ]; then
+              echo "ERROR: could not determine a rollback version; pass -p rollback-version=<chart-version>"
+              exit 1
+            fi
+            echo "Reinstalling kata-deploy $ROLLBACK_VERSION on node $NODE..."
+            HELM_ARGS=(
+              --namespace "$NS"
+              --install
+              --version "$ROLLBACK_VERSION"
+              --reset-then-reuse-values
+              --set "deploymentMode=job"
+              --set "job.nodes={${NODE}}"
+              --set "verification.pod="
+            )
+            if [ -n "$HELM_SET_VALUES" ]; then
+              HELM_ARGS+=(--set "$HELM_SET_VALUES")
+            fi
+            helm upgrade "$RELEASE" "$CHART" "${HELM_ARGS[@]}"
+          fi
 
-          # Re-apply the selection taint removed during helm-upgrade.
+          # Re-apply the selection taint removed during upgrade.
           if [[ -n "$TAINT_KEY" ]]; then
-            effect="NoSchedule"
             if [[ -n "$TAINT_VALUE" ]]; then
-              kubectl taint node "$NODE" "${TAINT_KEY}=${TAINT_VALUE}:${effect}" 2>/dev/null || true
+              kubectl taint node "$NODE" "${TAINT_KEY}=${TAINT_VALUE}:NoSchedule" 2>/dev/null || true
             else
-              kubectl taint node "$NODE" "${TAINT_KEY}:${effect}" 2>/dev/null || true
+              kubectl taint node "$NODE" "${TAINT_KEY}:NoSchedule" 2>/dev/null || true
             fi
             echo "Re-applied taint ${TAINT_KEY} on node $NODE"
           fi
