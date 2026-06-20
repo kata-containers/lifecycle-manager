@@ -794,7 +794,7 @@ spec:
                 --field-selector spec.nodeName="$NODE" \
                 -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
               if [ -n "$POD" ]; then
-                kubectl delete pod "$POD" -n "$NS" --wait=false
+                kubectl delete pod "$POD" -n "$NS" --wait=false --ignore-not-found
                 echo "Deleted pod $POD, new pod will start with new image"
               else
                 echo "Warning: No kata-deploy pod found on node $NODE"
@@ -1067,7 +1067,7 @@ spec:
                 --field-selector spec.nodeName="$NODE" \
                 -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
               if [ -n "$POD" ]; then
-                kubectl delete pod "$POD" -n "$NS" --wait=false
+                kubectl delete pod "$POD" -n "$NS" --wait=false --ignore-not-found
               fi
             done
             for NODE in $FAILED_NODES; do
@@ -1194,7 +1194,7 @@ spec:
               --field-selector spec.nodeName="$NODE" \
               -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
             if [ -n "$POD" ]; then
-              kubectl delete pod "$POD" -n "$NS" --wait=false
+              kubectl delete pod "$POD" -n "$NS" --wait=false --ignore-not-found
             fi
             echo "Waiting for kata-deploy to be ready after rollback..."
             for i in $(seq 1 60); do
