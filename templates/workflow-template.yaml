@@ -11,8 +11,9 @@ Supports both kata-deploy deployment models:
   - job:       drive the kata-deploy dispatcher one wave (batch) at a time
 
 Upgrades happen in waves of up to `batch-size` nodes; each wave is verified and,
-on failure, the wave's failed node(s) are rolled back and the workflow stops
-(fail-fast between waves). batch-size=1 reproduces strict node-by-node.
+on failure, every node upgraded in this workflow run is rolled back and the
+workflow stops (fail-fast between waves). batch-size=1 reproduces strict
+node-by-node.
 */}}
 {{- if not .Values.defaults.verificationPod }}
 {{- fail "defaults.verificationPod is required. Provide a pod spec that validates your Kata deployment using --set-file defaults.verificationPod=./your-pod.yaml" }}
@@ -484,8 +485,8 @@ spec:
 
     # =========================================================================
     # WAVE CHAIN (recursive: upgrades one batch of nodes, then the next)
-    # Stops immediately on the first wave with a failure - no mixed fleet beyond
-    # the already-verified waves.
+    # Stops immediately on the first wave with a failure; verify-batch rolls back
+    # every node upgraded in this run (including earlier verified waves).
     # =========================================================================
     - name: deploy-node-chain
       inputs:
@@ -926,9 +927,10 @@ spec:
           sleep 10
 
     # =========================================================================
-    # VERIFY A WAVE (with automatic rollback of failed nodes)
+    # VERIFY A WAVE (with automatic rollback of all upgraded nodes on failure)
     # Verification pods for all wave nodes run concurrently; if any node fails,
-    # its node is rolled back and the workflow stops (fail-fast).
+    # every node upgraded in this workflow run is rolled back and the workflow
+    # stops (fail-fast).
     # =========================================================================
     - name: verify-batch
       inputs:
@@ -1042,26 +1044,38 @@ spec:
             [ -n "$TEST_POD" ] && kubectl delete pod "$TEST_POD" -n "$VERIFY_NS" --ignore-not-found --wait=false
           done
 
-          # Successful nodes: uncordon, restore taint, mark completed.
-          for NODE in $OK_NODES; do
-            echo "Uncordoning node $NODE..."
-            kubectl uncordon "$NODE"
-            restore_taint "$NODE"
-            kubectl annotate node "$NODE" --overwrite \
-              katacontainers.io/kata-lifecycle-manager-status="completed" \
-              katacontainers.io/kata-current-version="$VERSION"
-            echo "Node $NODE upgrade completed successfully"
-          done
-
           if [ -z "$FAILED_NODES" ]; then
+            # Successful wave: uncordon, restore taint, mark completed.
+            for NODE in $OK_NODES; do
+              echo "Uncordoning node $NODE..."
+              kubectl uncordon "$NODE"
+              restore_taint "$NODE"
+              kubectl annotate node "$NODE" --overwrite \
+                katacontainers.io/kata-lifecycle-manager-status="completed" \
+                katacontainers.io/kata-current-version="$VERSION"
+              echo "Node $NODE upgrade completed successfully"
+            done
             echo "Wave verified successfully: $OK_NODES"
             sleep 10
             exit 0
           fi
 
-          # Failure path: roll back the failed nodes, then fail the workflow.
-          echo "Initiating rollback for failed node(s):$FAILED_NODES"
-          for NODE in $FAILED_NODES; do
+          # Failure path: revert every node upgraded in this workflow run (nodes
+          # from earlier verified waves plus the current wave), then stop.
+          NODES_TO_REVERT=""
+          for NODE in $(kubectl get nodes -o json 2>/dev/null \
+            | jq -r --arg ver "$VERSION" \
+              '.items[] | select(.metadata.annotations["katacontainers.io/kata-current-version"] == $ver) | .metadata.name'); do
+            NODES_TO_REVERT="$NODES_TO_REVERT $NODE"
+          done
+          for NODE in $OK_NODES $FAILED_NODES; do
+            NODES_TO_REVERT="$NODES_TO_REVERT $NODE"
+          done
+          NODES_TO_REVERT=$(echo "$NODES_TO_REVERT" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ')
+
+          echo "Initiating rollback for upgraded node(s):$NODES_TO_REVERT (triggered by failed:$FAILED_NODES)"
+          for NODE in $NODES_TO_REVERT; do
+            [ -n "$NODE" ] || continue
             kubectl annotate node "$NODE" --overwrite katacontainers.io/kata-lifecycle-manager-status="rolling-back"
           done
 
@@ -1069,7 +1083,8 @@ spec:
             # OnDelete only recreates manually deleted pods; --wait would block until
             # every node matches the rolled-back template (often never on partial upgrades).
             helm rollback "$RELEASE" -n "$NS"
-            for NODE in $FAILED_NODES; do
+            for NODE in $NODES_TO_REVERT; do
+              [ -n "$NODE" ] || continue
               echo "Deleting kata-deploy pod on node $NODE to apply rollback..."
               OLD_POD=$(kubectl get pods -n "$NS" -l name=kata-deploy \
                 --field-selector spec.nodeName="$NODE" -o json 2>/dev/null \
@@ -1092,19 +1107,19 @@ spec:
             done
           else
             # job mode: helm rollback does not re-run the dispatcher, so reinstall
-            # the previous version on the failed nodes via a scoped upgrade.
+            # the previous version on all upgraded nodes via a scoped upgrade.
             if [ -z "$PREVIOUS_VERSION" ] || [ "$PREVIOUS_VERSION" = "unknown" ]; then
               echo "ERROR: previous version unknown; cannot roll back job-mode nodes automatically"
             else
-              FAILED_LIST=$(echo "$FAILED_NODES" | xargs | tr ' ' ',')
-              echo "Reinstalling $PREVIOUS_VERSION on:$FAILED_NODES"
+              REVERT_LIST=$(echo "$NODES_TO_REVERT" | xargs | tr ' ' ',')
+              echo "Reinstalling $PREVIOUS_VERSION on:$NODES_TO_REVERT"
               HELM_ARGS=(
                 --namespace "$NS"
                 --install
                 --version "$PREVIOUS_VERSION"
                 --reset-then-reuse-values
                 --set "deploymentMode=job"
-                --set "job.nodes={${FAILED_LIST}}"
+                --set "job.nodes={${REVERT_LIST}}"
                 --set "verification.pod="
               )
               if [ -n "$HELM_SET_VALUES" ]; then
@@ -1114,10 +1129,13 @@ spec:
             fi
           fi
 
-          for NODE in $FAILED_NODES; do
+          for NODE in $NODES_TO_REVERT; do
+            [ -n "$NODE" ] || continue
             kubectl uncordon "$NODE"
             restore_taint "$NODE"
-            kubectl annotate node "$NODE" --overwrite katacontainers.io/kata-lifecycle-manager-status="rolled-back"
+            kubectl annotate node "$NODE" --overwrite \
+              katacontainers.io/kata-lifecycle-manager-status="rolled-back" \
+              katacontainers.io/kata-current-version-
             echo "Node $NODE rolled back"
           done
 
