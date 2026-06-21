@@ -718,15 +718,14 @@ spec:
           fi
           echo ""
 
-          # upgrade --install: install if missing, upgrade if present.
-          # updateStrategy.type=OnDelete is applied by the kata-deploy chart (3.27.0+).
-          # verification.pod="" disables kata-deploy's cluster-wide verification
-          # (kata-lifecycle-manager does per-node verification).
+          # Merge the new chart version into the existing release values (do not use
+          # --reset-then-reuse-values: it resets to chart defaults first, and
+          # kata-deploy >= 3.31.0 defaults to RollingUpdate which would restart
+          # every pod when the template changes). Always pin OnDelete here.
           HELM_ARGS=(
             --namespace "$NS"
             --install
             --version "$VERSION"
-            --reset-then-reuse-values
             --set updateStrategy.type=OnDelete
             --set "verification.pod="
           )
@@ -734,6 +733,13 @@ spec:
             HELM_ARGS+=(--set "$HELM_SET_VALUES")
           fi
           helm upgrade "$RELEASE" "$CHART" "${HELM_ARGS[@]}"
+
+          DS_STRATEGY=$(kubectl get daemonset kata-deploy -n "$NS" \
+            -o jsonpath='{.spec.updateStrategy.type}' 2>/dev/null || echo "")
+          if [ "$DS_STRATEGY" != "OnDelete" ]; then
+            echo "ERROR: kata-deploy DaemonSet updateStrategy is '$DS_STRATEGY', expected OnDelete"
+            exit 1
+          fi
 
           echo ""
           echo "Helm upgrade complete. DaemonSet has updateStrategy=OnDelete; pods will not"
@@ -790,12 +796,12 @@ spec:
             # with the new image on just that node.
             for NODE in $NODES; do
               echo "Deleting kata-deploy pod on node $NODE to trigger upgrade..."
-              POD=$(kubectl get pods -n "$NS" -l name=kata-deploy \
-                --field-selector spec.nodeName="$NODE" \
-                -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-              if [ -n "$POD" ]; then
-                kubectl delete pod "$POD" -n "$NS" --wait=false --ignore-not-found
-                echo "Deleted pod $POD, new pod will start with new image"
+              OLD_POD=$(kubectl get pods -n "$NS" -l name=kata-deploy \
+                --field-selector spec.nodeName="$NODE" -o json 2>/dev/null \
+                | jq -r '[.items[] | select(.metadata.deletionTimestamp == null) | .metadata.name][0] // empty')
+              if [ -n "$OLD_POD" ]; then
+                kubectl delete pod "$OLD_POD" -n "$NS" --wait=true --ignore-not-found
+                echo "Deleted pod $OLD_POD, new pod will start with new image"
               else
                 echo "Warning: No kata-deploy pod found on node $NODE"
               fi
@@ -876,8 +882,8 @@ spec:
               ready=false
               for i in $(seq 1 60); do
                 POD=$(kubectl get pods -n "$NS" -l name=kata-deploy \
-                  --field-selector spec.nodeName="$NODE" \
-                  -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+                  --field-selector spec.nodeName="$NODE" -o json 2>/dev/null \
+                  | jq -r '[.items[] | select(.metadata.deletionTimestamp == null) | .metadata.name][0] // empty')
                 if [[ -n "$POD" ]]; then
                   if kubectl wait pod "$POD" -n "$NS" --for=condition=Ready --timeout=10s 2>/dev/null; then
                     echo "kata-deploy pod $POD on $NODE is ready"
@@ -1060,22 +1066,23 @@ spec:
           done
 
           if [ "$MODE" = "daemonset" ]; then
-            helm rollback "$RELEASE" -n "$NS" --wait --timeout 10m
+            # OnDelete only recreates manually deleted pods; --wait would block until
+            # every node matches the rolled-back template (often never on partial upgrades).
+            helm rollback "$RELEASE" -n "$NS"
             for NODE in $FAILED_NODES; do
               echo "Deleting kata-deploy pod on node $NODE to apply rollback..."
-              POD=$(kubectl get pods -n "$NS" -l name=kata-deploy \
-                --field-selector spec.nodeName="$NODE" \
-                -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-              if [ -n "$POD" ]; then
-                kubectl delete pod "$POD" -n "$NS" --wait=false --ignore-not-found
+              OLD_POD=$(kubectl get pods -n "$NS" -l name=kata-deploy \
+                --field-selector spec.nodeName="$NODE" -o json 2>/dev/null \
+                | jq -r '[.items[] | select(.metadata.deletionTimestamp == null) | .metadata.name][0] // empty')
+              if [ -n "$OLD_POD" ]; then
+                kubectl delete pod "$OLD_POD" -n "$NS" --wait=true --ignore-not-found
               fi
-            done
-            for NODE in $FAILED_NODES; do
               for i in $(seq 1 60); do
                 POD=$(kubectl get pods -n "$NS" -l name=kata-deploy \
-                  --field-selector spec.nodeName="$NODE" \
-                  -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-                if [ -n "$POD" ] && kubectl wait pod "$POD" -n "$NS" --for=condition=Ready --timeout=10s 2>/dev/null; then
+                  --field-selector spec.nodeName="$NODE" -o json 2>/dev/null \
+                  | jq -r '[.items[] | select(.metadata.deletionTimestamp == null) | .metadata.name][0] // empty')
+                if [ -n "$POD" ] && { [ -z "$OLD_POD" ] || [ "$POD" != "$OLD_POD" ]; } \
+                   && kubectl wait pod "$POD" -n "$NS" --for=condition=Ready --timeout=10s 2>/dev/null; then
                   echo "kata-deploy pod $POD on $NODE ready after rollback"
                   break
                 fi
@@ -1188,20 +1195,22 @@ spec:
           kubectl annotate node "$NODE" --overwrite katacontainers.io/kata-lifecycle-manager-status="rolling-back"
 
           if [ "$MODE" = "daemonset" ]; then
-            helm rollback "$RELEASE" -n "$NS" --wait --timeout 10m
+            # OnDelete: revert the release, then restart the target pod (see verify-batch).
+            helm rollback "$RELEASE" -n "$NS"
             echo "Deleting kata-deploy pod on node $NODE to apply rollback..."
-            POD=$(kubectl get pods -n "$NS" -l name=kata-deploy \
-              --field-selector spec.nodeName="$NODE" \
-              -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-            if [ -n "$POD" ]; then
-              kubectl delete pod "$POD" -n "$NS" --wait=false --ignore-not-found
+            OLD_POD=$(kubectl get pods -n "$NS" -l name=kata-deploy \
+              --field-selector spec.nodeName="$NODE" -o json 2>/dev/null \
+              | jq -r '[.items[] | select(.metadata.deletionTimestamp == null) | .metadata.name][0] // empty')
+            if [ -n "$OLD_POD" ]; then
+              kubectl delete pod "$OLD_POD" -n "$NS" --wait=true --ignore-not-found
             fi
             echo "Waiting for kata-deploy to be ready after rollback..."
             for i in $(seq 1 60); do
               POD=$(kubectl get pods -n "$NS" -l name=kata-deploy \
-                --field-selector spec.nodeName="$NODE" \
-                -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-              if [ -n "$POD" ] && kubectl wait pod "$POD" -n "$NS" --for=condition=Ready --timeout=10s 2>/dev/null; then
+                --field-selector spec.nodeName="$NODE" -o json 2>/dev/null \
+                | jq -r '[.items[] | select(.metadata.deletionTimestamp == null) | .metadata.name][0] // empty')
+              if [ -n "$POD" ] && { [ -z "$OLD_POD" ] || [ "$POD" != "$OLD_POD" ]; } \
+                 && kubectl wait pod "$POD" -n "$NS" --for=condition=Ready --timeout=10s 2>/dev/null; then
                 echo "kata-deploy pod $POD is ready after rollback"
                 break
               fi
