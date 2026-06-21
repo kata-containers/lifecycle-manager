@@ -1,0 +1,20 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Wait until every scheduled kata-deploy pod is Ready. Works with OnDelete
+# (kubectl rollout status only supports RollingUpdate).
+---
+- name: Wait for all kata-deploy DaemonSet pods to be ready
+  ansible.builtin.shell:
+    cmd: |
+      set -e
+      DESIRED=$(kubectl get daemonset kata-deploy -n {{ helm_namespace }} \
+        -o jsonpath='{.status.desiredNumberScheduled}')
+      READY=$(kubectl get daemonset kata-deploy -n {{ helm_namespace }} \
+        -o jsonpath='{.status.numberReady}')
+      test -n "$DESIRED" && test "$DESIRED" -gt 0 && test "$READY" = "$DESIRED"
+  register: _kd_daemonset_ready
+  until: _kd_daemonset_ready.rc == 0
+  retries: "{{ (kata_deploy_ready_timeout | int) // 5 }}"
+  delay: 5
+  changed_when: false
