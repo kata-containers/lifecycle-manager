@@ -68,16 +68,14 @@
       --namespace {{ helm_namespace }}
       --create-namespace
       --reset-values
+      {{ '--set updateStrategy.type=OnDelete'
+         if deployment_mode | default('daemonset') == 'daemonset' else '' }}
       {{ kata_from_helm_set_values }}
   register: helm_install
   changed_when: helm_install.rc == 0
 
 - name: Wait for kata-deploy DaemonSet to be ready (daemonset mode)
-  ansible.builtin.command:
-    cmd: >-
-      kubectl rollout status daemonset/kata-deploy
-      -n {{ helm_namespace }} --timeout={{ kata_deploy_ready_timeout }}s
-  changed_when: false
+  ansible.builtin.include_tasks: wait_daemonset_ready.yaml
   when: deployment_mode | default('daemonset') == 'daemonset'
 
 # OnDelete updateStrategy does not recreate existing pods when the release
@@ -95,11 +93,7 @@
   when: deployment_mode | default('daemonset') == 'daemonset'
 
 - name: Wait for kata-deploy pods after recreation (daemonset mode)
-  ansible.builtin.command:
-    cmd: >-
-      kubectl rollout status daemonset/kata-deploy
-      -n {{ helm_namespace }} --timeout={{ kata_deploy_ready_timeout }}s
-  changed_when: false
+  ansible.builtin.include_tasks: wait_daemonset_ready.yaml
   when: deployment_mode | default('daemonset') == 'daemonset'
 
 # In job mode the install dispatcher runs as a post-install hook and `helm` blocks
