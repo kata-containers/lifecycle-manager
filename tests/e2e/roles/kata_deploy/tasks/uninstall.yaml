@@ -3,7 +3,25 @@
 ---
 - name: Uninstall kata-deploy helm release
   ansible.builtin.command:
-    cmd: helm uninstall {{ helm_release }} -n {{ helm_namespace }} --wait
+    cmd: helm uninstall {{ helm_release }} -n {{ helm_namespace }} --wait --timeout 10m
   register: helm_uninstall
   changed_when: helm_uninstall.rc == 0
+  failed_when: false
+
+- name: Delete leftover kata-deploy pods
+  ansible.builtin.command:
+    cmd: >-
+      kubectl delete pods -n {{ helm_namespace }} -l name=kata-deploy
+      --ignore-not-found --wait=false
+  changed_when: true
+  failed_when: false
+
+- name: Wait until kata-deploy helm release is absent
+  ansible.builtin.command:
+    cmd: helm status {{ helm_release }} -n {{ helm_namespace }}
+  register: _helm_release_absent
+  until: _helm_release_absent.rc != 0
+  retries: 24
+  delay: 5
+  changed_when: false
   failed_when: false
