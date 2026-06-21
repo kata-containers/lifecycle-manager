@@ -19,9 +19,14 @@
       ansible.builtin.shell:
         cmd: >-
           kubectl get pods -n {{ helm_namespace }} -l name=kata-deploy
-          --field-selector spec.nodeName={{ worker_node_a }}
-          -o jsonpath='{.items[0].metadata.uid}'
+          --field-selector spec.nodeName={{ worker_node_a }},status.phase=Running
+          -o json
+          | jq -r '[.items[] | select(.metadata.deletionTimestamp == null)
+          | .metadata.uid][0] // empty'
       register: _tc12_pod_a_uid_before
+      until: _tc12_pod_a_uid_before.stdout | length > 0
+      retries: 24
+      delay: 5
       changed_when: false
       when: deployment_mode | default('daemonset') == 'daemonset'
 
@@ -29,9 +34,14 @@
       ansible.builtin.shell:
         cmd: >-
           kubectl get pods -n {{ helm_namespace }} -l name=kata-deploy
-          --field-selector spec.nodeName={{ worker_node_b }}
-          -o jsonpath='{.items[0].metadata.uid}'
+          --field-selector spec.nodeName={{ worker_node_b }},status.phase=Running
+          -o json
+          | jq -r '[.items[] | select(.metadata.deletionTimestamp == null)
+          | .metadata.uid][0] // empty'
       register: _tc12_pod_b_uid_before
+      until: _tc12_pod_b_uid_before.stdout | length > 0
+      retries: 24
+      delay: 5
       changed_when: false
       when: deployment_mode | default('daemonset') == 'daemonset'
 
@@ -82,9 +92,14 @@
       ansible.builtin.shell:
         cmd: >-
           kubectl get pods -n {{ helm_namespace }} -l name=kata-deploy
-          --field-selector spec.nodeName={{ worker_node_a }}
-          -o jsonpath='{.items[0].metadata.uid}'
+          --field-selector spec.nodeName={{ worker_node_a }},status.phase=Running
+          -o json
+          | jq -r '[.items[] | select(.metadata.deletionTimestamp == null)
+          | .metadata.uid][0] // empty'
       register: _tc12_pod_a_uid_after
+      until: _tc12_pod_a_uid_after.stdout | length > 0
+      retries: 24
+      delay: 5
       changed_when: false
       when: deployment_mode | default('daemonset') == 'daemonset'
 
@@ -104,9 +119,14 @@
       ansible.builtin.shell:
         cmd: >-
           kubectl get pods -n {{ helm_namespace }} -l name=kata-deploy
-          --field-selector spec.nodeName={{ worker_node_b }}
-          -o jsonpath='{.items[0].metadata.uid}'
+          --field-selector spec.nodeName={{ worker_node_b }},status.phase=Running
+          -o json
+          | jq -r '[.items[] | select(.metadata.deletionTimestamp == null)
+          | .metadata.uid][0] // empty'
       register: _tc12_pod_b_uid_after
+      until: _tc12_pod_b_uid_after.stdout | length > 0
+      retries: 24
+      delay: 5
       changed_when: false
       when: deployment_mode | default('daemonset') == 'daemonset'
 
