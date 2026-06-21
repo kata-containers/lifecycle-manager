@@ -7,7 +7,7 @@
 # verification pod that always fails on worker_node_b. Both nodes are processed
 # in a single wave; verification of worker_node_b fails, so the wave's failed
 # node is rolled back and the workflow stops with a failure. This exercises the
-# multi-node failure path in verify-batch (per-node rollback within a wave).
+# multi-node failure path in verify-batch (rollback of all upgraded nodes).
 #
 # Assertions are kept to the unambiguous facts: the workflow fails, the failed
 # node is rolled back to its previous version and annotated rolled-back, and both

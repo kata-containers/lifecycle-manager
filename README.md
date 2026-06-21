@@ -378,15 +378,16 @@ Any kata-deploy chart value can be overridden this way, not just the image.
 ## Rollback
 
 **Automatic rollback on verification failure:** If a verification pod fails (non-zero exit),
-kata-lifecycle-manager automatically reverts the failed node(s) in that wave:
-- **daemonset**: `helm rollback` to the previous release, then restart the node's pod and
-  wait for it to be Ready with the previous version.
-- **job**: `helm rollback` would not re-run the dispatcher, so the node is reverted by a
+kata-lifecycle-manager automatically reverts every node upgraded in this workflow run
+(including nodes from earlier verified waves):
+- **daemonset**: `helm rollback` to the previous release, then restart each upgraded node's
+  pod and wait for it to be Ready with the previous version.
+- **job**: `helm rollback` would not re-run the dispatcher, so upgraded nodes are reverted by a
   scoped `helm upgrade` back to the previous chart version (reinstalling the old artifacts
-  on just that node).
+  on those nodes).
 
-Then the node is `uncordoned`, annotated `rolled-back`, and the workflow stops. This
-ensures nodes are never left in a broken state.
+Then each reverted node is `uncordoned`, annotated `rolled-back`, and the workflow stops.
+This ensures nodes are never left in a broken state.
 
 **Manual rollback:** For cases where you need to rollback a successfully upgraded node:
 
@@ -435,15 +436,15 @@ wave's nodes), leaving the rest of the fleet untouched until their turn:
 - **job**: each `helm upgrade` is scoped with `job.nodes={...current node(s)...}`, so
   kata-deploy's dispatcher creates per-node install Jobs only for those nodes.
 
-This ensures that if verification fails later, the earlier (verified) nodes keep running the
-new version while the workflow stops. No automatic cluster-wide rollback occurs unless
-explicitly triggered.
+This ensures that if verification fails later, earlier upgraded nodes are rolled
+back together with the failing wave. The workflow stops before touching remaining
+nodes.
 
 **Rollback behavior:**
-- On verification failure, only the failed node(s) in the wave are reverted to the previous
-  version (daemonset → `helm rollback` + pod restart; job → scoped re-upgrade to the
-  previous chart version).
-- Already-verified waves continue running the new version (they aren't touched).
+- On verification failure, every node upgraded in this workflow run is reverted to
+  the previous version (daemonset → `helm rollback` + pod restart on each upgraded
+  node; job → scoped re-upgrade to the previous chart version on those nodes).
+- Nodes not yet upgraded in this run are untouched.
 
 ## For Projects Using kata-deploy
 

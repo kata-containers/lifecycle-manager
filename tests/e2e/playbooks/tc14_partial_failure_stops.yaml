@@ -76,12 +76,12 @@
       vars:
         expected_status: "Failed"
 
-    - name: Assert worker_node_a annotation status is completed
+    - name: Assert worker_node_a annotation status is rolled-back
       ansible.builtin.include_tasks: ../tasks/assertions/node_annotation.yaml
       vars:
         node_name: "{{ worker_node_a }}"
         annotation_key: "katacontainers.io/kata-lifecycle-manager-status"
-        expected_value: "completed"
+        expected_value: "rolled-back"
 
     - name: Assert worker_node_b annotation status is rolled-back
       ansible.builtin.include_tasks: ../tasks/assertions/node_annotation.yaml

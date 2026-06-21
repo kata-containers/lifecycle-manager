@@ -411,14 +411,14 @@ This enables:
 ### Rollback Support
 
 **Automatic rollback on verification failure:** If a verification pod fails (non-zero exit),
-kata-lifecycle-manager automatically reverts the failed node(s) in that wave, then
-`uncordons` them, annotates `rolled-back`, and stops the workflow. The revert mechanism is
-mode-specific:
-- **daemonset**: `helm rollback` to the previous release, then restart the node's pod and
-  wait for it to be ready with the previous version.
-- **job**: a plain `helm rollback` would not re-run the dispatcher, so the node is reverted
-  via a scoped `helm upgrade` back to the previous chart version (captured at workflow
-  start), reinstalling the old artifacts on just that node.
+kata-lifecycle-manager automatically reverts every node upgraded in this workflow run
+(including nodes from earlier verified waves), then `uncordons` them, annotates
+`rolled-back`, and stops the workflow. The revert mechanism is mode-specific:
+- **daemonset**: `helm rollback` to the previous release, then restart each upgraded node's
+  pod and wait for it to be ready with the previous version.
+- **job**: a plain `helm rollback` would not re-run the dispatcher, so upgraded nodes are
+  reverted via a scoped `helm upgrade` back to the previous chart version (captured at
+  workflow start), reinstalling the old artifacts on those nodes.
 
 This ensures nodes are never left in a broken state.
 
