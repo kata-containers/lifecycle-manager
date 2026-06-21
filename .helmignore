@@ -1,0 +1,17 @@
+# VCS and editor metadata (must not be embedded in release secrets)
+.git/
+.gitignore
+.cursor/
+
+# Repository content not shipped in the chart
+.github/
+tests/
+docs/
+images/
+
+# Packaging artifacts
+*.tgz
+
+# Documentation (not used at install time)
+README.md
+LICENSE
