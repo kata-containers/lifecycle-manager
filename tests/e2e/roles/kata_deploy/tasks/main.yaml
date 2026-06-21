@@ -67,11 +67,34 @@
       {{ kata_deploy_chart }} {{ _kd_version_arg }}
       --namespace {{ helm_namespace }}
       --create-namespace
+      --reset-values
       {{ kata_from_helm_set_values }}
   register: helm_install
   changed_when: helm_install.rc == 0
 
 - name: Wait for kata-deploy DaemonSet to be ready (daemonset mode)
+  ansible.builtin.command:
+    cmd: >-
+      kubectl rollout status daemonset/kata-deploy
+      -n {{ helm_namespace }} --timeout={{ kata_deploy_ready_timeout }}s
+  changed_when: false
+  when: deployment_mode | default('daemonset') == 'daemonset'
+
+# OnDelete updateStrategy does not recreate existing pods when the release
+# values change. Force a fresh install on every node after reset so the host
+# kata binaries match kata_from_version (not a prior test's helm-set-values).
+# Block until the old pods are actually gone (--wait): with --wait=false the
+# subsequent readiness check can pass against the still-Ready terminating pods,
+# leaving tests to record a stale pod UID that "changes" once recreation lands.
+- name: Recreate kata-deploy pods to apply chart defaults (daemonset mode)
+  ansible.builtin.command:
+    cmd: >-
+      kubectl delete pods -n {{ helm_namespace }} -l name=kata-deploy
+      --ignore-not-found --wait=true
+  changed_when: true
+  when: deployment_mode | default('daemonset') == 'daemonset'
+
+- name: Wait for kata-deploy pods after recreation (daemonset mode)
   ansible.builtin.command:
     cmd: >-
       kubectl rollout status daemonset/kata-deploy
