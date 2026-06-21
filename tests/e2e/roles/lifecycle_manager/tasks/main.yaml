@@ -22,6 +22,7 @@
       helm upgrade --install kata-lifecycle-manager
       {{ lifecycle_manager_chart_path }}
       --namespace {{ argo_namespace }}
+      --history-max 5
       --set-file defaults.verificationPod={{ _verification_pod_path }}
       --set defaults.drainEnabled=false
       --set defaults.helmSetValues=""

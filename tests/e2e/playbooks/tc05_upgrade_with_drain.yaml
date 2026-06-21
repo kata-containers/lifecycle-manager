@@ -88,6 +88,7 @@
               helm upgrade kata-lifecycle-manager
               {{ lifecycle_manager_chart_path }}
               -n {{ argo_namespace }}
+              --history-max 5
               --reuse-values
               --set defaults.drainEnabled=true
             chdir: "{{ playbook_dir }}/../../.."
@@ -157,6 +158,7 @@
               helm upgrade kata-lifecycle-manager
               {{ lifecycle_manager_chart_path }}
               -n {{ argo_namespace }}
+              --history-max 5
               --reuse-values
               --set defaults.drainEnabled=false
             chdir: "{{ playbook_dir }}/../../.."
