@@ -353,6 +353,17 @@ This matters because plain `helm upgrade` resets a release to chart defaults: wi
 reuse an install narrowed to six RuntimeClasses would come back with every shim the chart
 ships.
 
+One value deserves a second look before you upgrade: a pinned `image.tag`. Value reuse
+carries it to the target version, and a kata-deploy image only fits the chart it was
+released with — it expects the mounts and security context that chart renders, so an
+image from another release crash-loops the pod. If your release pins an image, the
+prerequisites step says so, and you can move the pin along with
+`-p helm-set-values="image.tag=<tag>"`. The chart kata-containers publishes from `main`
+is versioned `0.0.0-dev` and defaults to the matching
+`quay.io/kata-containers/kata-deploy-ci:kata-containers-latest` image; it is accepted as a
+`target-version` and skips the minimum-version check, since it sorts below every release
+while carrying everything they do.
+
 ### When to Use Drain
 
 **Default (drain disabled):** Drain is not required for Kata upgrades. Running Kata

@@ -257,6 +257,16 @@ workflow forces only what the rollout needs: the chart version, `updateStrategy.
 daemonset mode, an empty `verification.pod` (verification is per node here), the job-mode
 wave scoping, and any explicit `helm-set-values`.
 
+**A chart version and a kata-deploy image travel together.** The image expects the mounts
+and security context rendered by the chart it was released with, so pairing it with another
+version's chart crash-loops the pod - and in an upgrade that surfaces as a wave that never
+becomes ready. The workflow never derives one from the other, but it does warn when the
+release pins an `image.tag` and the target version differs, since value reuse would
+otherwise carry that pin to a chart it was not built for. The chart kata-containers
+publishes from `main` is versioned `0.0.0-dev`; it is accepted as a `target-version` and
+skips the minimum-version gate, because it sorts below every release while carrying
+everything they do.
+
 **The job-mode dispatcher must be schedulable.** The per-node install Jobs carry a
 `nodeName` and so bypass the scheduler, but the dispatcher Job that fans them out is an
 ordinary scheduled pod rendered with the release's `tolerations`. A wave is cordoned before
