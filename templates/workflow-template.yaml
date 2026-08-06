@@ -763,7 +763,8 @@ spec:
           if [ -n "$HELM_SET_VALUES" ]; then
             HELM_ARGS+=(--set "$HELM_SET_VALUES")
           fi
-          helm upgrade "$RELEASE" "$CHART" "${HELM_ARGS[@]}"
+          {{- include "kata-lifecycle-manager.helmUpgradeSnippet" . | nindent 10 }}
+          helm_upgrade_kata_deploy "$RELEASE" "$CHART" "${HELM_ARGS[@]}"
 
           DS_STRATEGY=$(kubectl get daemonset kata-deploy -n "$NS" \
             -o jsonpath='{.spec.updateStrategy.type}' 2>/dev/null || echo "")
@@ -864,7 +865,8 @@ spec:
             if [ -n "$HELM_SET_VALUES" ]; then
               HELM_ARGS+=(--set "$HELM_SET_VALUES")
             fi
-            helm upgrade "$RELEASE" "$CHART" "${HELM_ARGS[@]}"
+            {{- include "kata-lifecycle-manager.helmUpgradeSnippet" . | nindent 12 }}
+            helm_upgrade_kata_deploy "$RELEASE" "$CHART" "${HELM_ARGS[@]}"
             echo "Wave installed (dispatcher reported success for all nodes)."
           fi
 

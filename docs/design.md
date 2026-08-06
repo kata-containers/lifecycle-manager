@@ -502,6 +502,25 @@ The workflow requires the following permissions:
 | pods/log | get | Verification output |
 | `daemonsets` | get, list, watch | Wait for `kata-deploy` (daemonset mode) |
 | `jobs` (batch) | get, list, watch, create, update, patch, delete | kata-deploy hooks; job-mode dispatcher + per-node install/cleanup Jobs |
+| nodes/proxy | get | Held only to grant it: kata-deploy's own `ClusterRole` asks for it |
+
+#### The ClusterRole mirrors kata-deploy's
+
+Upgrading means applying the kata-deploy chart, and that chart carries
+kata-deploy's `ClusterRole`. Kubernetes does not let an account hand out rights it
+does not hold itself, so the workflow's `ClusterRole` has to be a superset of
+kata-deploy's, including permissions the workflow never exercises (`nodes/proxy`,
+which kata-deploy uses to read kubelet `/configz` during its host checks).
+
+A kata-deploy release that adds a permission this chart does not mirror yet fails
+every upgrade with `attempting to grant RBAC permissions not currently held`. The
+helm upgrade steps recognise that error and point at `rbac.extraRules`, which
+grants the missing rule without waiting for a release of this chart:
+
+```bash
+helm upgrade kata-lifecycle-manager <chart> -n argo --reuse-values \
+  --set-json 'rbac.extraRules=[{"apiGroups":[""],"resources":["nodes/proxy"],"verbs":["get"]}]'
+```
 
 ## User Experience
 
@@ -546,7 +565,9 @@ kubectl get nodes \
    not provided, ensuring upgrades are always verified.
 
 3. **Minimal RBAC**: The `ServiceAccount` has only the permissions required for upgrade
-   operations.
+   operations, plus the ones kata-deploy's own `ClusterRole` grants, which Kubernetes
+   requires it to hold to install that role. It is deliberately not given `escalate`
+   on `clusterroles`, so the rules it can grant stay enumerated and reviewable.
 
 4. **User-Controlled Verification**: Verification logic is entirely user-defined, avoiding
    any hardcoded assumptions about what "working" means.

@@ -22,6 +22,12 @@ rules:
   - apiGroups: [""]
     resources: ["nodes"]
     verbs: ["get", "list", "watch", "patch", "update"]
+  # Not used by the workflow itself: kata-deploy reads kubelet /configz through
+  # the apiserver node proxy during its host checks, and Kubernetes only lets an
+  # account create a ClusterRole granting rights it holds itself.
+  - apiGroups: [""]
+    resources: ["nodes/proxy"]
+    verbs: ["get"]
   # Pod operations (eviction for drain, verification pods, Argo output parameters)
   - apiGroups: [""]
     resources: ["pods"]
@@ -77,6 +83,10 @@ rules:
   - apiGroups: ["nfd.k8s-sigs.io"]
     resources: ["nodefeaturerules"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  {{- with (default dict .Values.rbac).extraRules }}
+  # Rules the cluster admin added for a kata-deploy release this chart predates
+  {{- toYaml . | nindent 2 }}
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

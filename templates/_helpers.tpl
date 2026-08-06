@@ -78,6 +78,40 @@ jq '{tolerations: ((.tolerations // []) + [{
 {{- end }}
 
 {{/*
+Bash that defines helm_upgrade_kata_deploy, a helm upgrade that explains the one
+failure the workflow cannot avoid on its own.
+
+Installing kata-deploy means applying kata-deploy's ClusterRole, and Kubernetes
+refuses to let an account grant rights it does not hold. This chart's ClusterRole
+therefore mirrors kata-deploy's, and a kata-deploy release that adds a permission
+to it fails every upgrade until this chart mirrors that one too. The apiserver
+names the missing rule but not who is missing it, so point at the knob that
+grants it without waiting for a release of this chart.
+*/}}
+{{- define "kata-lifecycle-manager.helmUpgradeSnippet" -}}
+helm_upgrade_kata_deploy() {
+  local rc=0
+  set +e
+  helm upgrade "$@" 2>&1 | tee /tmp/helm-upgrade.log
+  rc=${PIPESTATUS[0]}
+  set -e
+  if [ "$rc" -ne 0 ] &&
+     grep -q "attempting to grant RBAC permissions not currently held" /tmp/helm-upgrade.log; then
+    echo ""
+    echo "The kata-deploy chart grants the permission printed above and this"
+    echo "workflow's service account does not hold it, so Kubernetes rejected the"
+    echo "upgrade. Grant that rule to kata-lifecycle-manager and re-submit:"
+    echo ""
+    echo "  helm upgrade kata-lifecycle-manager <chart> -n <namespace> --reuse-values \\"
+    echo "    --set-json 'rbac.extraRules=[{\"apiGroups\":[\"\"],\"resources\":[\"nodes/proxy\"],\"verbs\":[\"get\"]}]'"
+    echo ""
+    echo "(the example grants nodes/proxy; use the rule from the error above)"
+  fi
+  return "$rc"
+}
+{{- end }}
+
+{{/*
 Bash that fills ROLLBACK_VALUES_ARGS with the helm flags that put the release
 back on the values it ran with under $ROLLBACK_TARGET_VERSION. Used by the
 job-mode rollback paths, where helm rollback cannot be used because it does not
