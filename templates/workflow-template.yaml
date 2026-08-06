@@ -267,7 +267,7 @@ spec:
               echo ""
               echo "  helm upgrade $RELEASE \\"
               echo "    oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy \\"
-              echo "    --namespace $NS --version $TARGET_VERSION --reuse-values \\"
+              echo "    --namespace $NS --version $TARGET_VERSION --reset-then-reuse-values \\"
               echo "    --set deploymentMode=job --set verification.pod="
               echo ""
               echo "Notes:"
@@ -285,7 +285,7 @@ spec:
               echo ""
               echo "  helm upgrade $RELEASE \\"
               echo "    oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy \\"
-              echo "    --namespace $NS --version $TARGET_VERSION --reuse-values \\"
+              echo "    --namespace $NS --version $TARGET_VERSION --reset-then-reuse-values \\"
               echo "    --set deploymentMode=daemonset --set updateStrategy.type=OnDelete \\"
               echo "    --set verification.pod="
               echo ""
@@ -719,14 +719,18 @@ spec:
           fi
           echo ""
 
-          # Merge the new chart version into the existing release values (do not use
-          # --reset-then-reuse-values: it resets to chart defaults first, and
-          # kata-deploy >= 3.31.0 defaults to RollingUpdate which would restart
-          # every pod when the template changes). Always pin OnDelete here.
+          # --reset-then-reuse-values keeps the values the release was installed
+          # with (shim profiles, snapshotter setup, tolerations, ...) while taking
+          # the new chart's defaults for everything the user never set. Without it
+          # helm resets the release to plain chart defaults, which silently widens
+          # a curated install (e.g. an NVIDIA GPU profile) to every shim the chart
+          # ships. The explicit --set flags below outrank both, so OnDelete holds
+          # regardless of what the chart or the previous release defaulted to.
           HELM_ARGS=(
             --namespace "$NS"
             --install
             --version "$VERSION"
+            --reset-then-reuse-values
             --set updateStrategy.type=OnDelete
             --set "verification.pod="
           )
