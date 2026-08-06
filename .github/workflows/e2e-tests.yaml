@@ -14,13 +14,13 @@ on:
   workflow_dispatch:
     inputs:
       from_version:
-        description: "Kata Containers FROM version (initial install)"
+        description: "Kata Containers FROM version (initial install; latest/previous track the released charts)"
         required: false
-        default: "3.30.0"
+        default: "previous"
       to_version:
-        description: "Kata Containers TO version (upgrade target chart; 0.0.0-dev is the chart built from kata main)"
+        description: "Kata Containers TO version (upgrade target chart; latest/previous track the released charts, 0.0.0-dev is the chart built from kata main)"
         required: false
-        default: "4.0.0"
+        default: "latest"
       to_image:
         description: "Override upgrade image (empty = the chart's own image; kata-containers-latest only goes with to_version=0.0.0-dev)"
         required: false
@@ -69,8 +69,10 @@ jobs:
       #   schedule: latest release -> the chart built from kata main (0.0.0-dev)
       #     with the kata-containers-latest image that chart defaults to. A red
       #     nightly means kata main and the lifecycle manager drifted apart.
-      FROM_VERSION: ${{ github.event.inputs.from_version || (github.event_name == 'schedule' && '4.0.0' || '3.30.0') }}
-      TO_VERSION: ${{ github.event.inputs.to_version || (github.event_name == 'schedule' && '0.0.0-dev' || '4.0.0') }}
+      # latest/previous are resolved from the chart registry per run, so a new
+      # kata-deploy release is picked up without touching this file.
+      FROM_VERSION: ${{ github.event.inputs.from_version || (github.event_name == 'schedule' && 'latest' || 'previous') }}
+      TO_VERSION: ${{ github.event.inputs.to_version || (github.event_name == 'schedule' && '0.0.0-dev' || 'latest') }}
       TO_IMAGE: ${{ github.event.inputs.to_image || (github.event_name == 'schedule' && 'quay.io/kata-containers/kata-deploy-ci:kata-containers-latest' || '') }}
       DEPLOYMENT_MODE: ${{ github.event.inputs.deployment_mode || 'daemonset' }}
       BATCH_SIZE: ${{ github.event.inputs.batch_size || '1' }}
@@ -83,7 +85,7 @@ jobs:
 
       - name: Verify dependencies
         run: |
-          for cmd in kcli kubectl helm argo ansible-playbook; do
+          for cmd in kcli kubectl helm argo ansible-playbook curl jq; do
             command -v "$cmd" || { echo "MISSING: $cmd"; exit 1; }
           done
 

@@ -16,8 +16,8 @@ RUNTIME=""
 TC_FILTER="all"
 SKIP_CLUSTER_CREATE=false
 SKIP_CLUSTER_DELETE=false
-FROM_VERSION=""
-TO_VERSION=""
+FROM_VERSION="previous"
+TO_VERSION="latest"
 TO_IMAGE=""
 DEPLOYMENT_MODE=""
 BATCH_SIZE=""
@@ -49,6 +49,11 @@ Options:
   --to-image <image>                        Override kata_to_image (empty = the image the
                                             chart of that version defaults to; must stay
                                             on the same side of released vs. main)
+
+Both version options also take 'latest' (newest released chart) and 'previous'
+(the release before it), resolved from the chart registry at run time so the
+suite follows kata-deploy releases without being edited. Defaults:
+--from-version previous --to-version latest.
   --deployment-mode <daemonset|job>         Override deployment_mode (default: daemonset)
   --batch-size <N>                          Override batch_size (default: 1 = node-by-node)
   --kata-deploy-chart <ref|path>            Override kata_deploy_chart (OCI ref or local
@@ -85,6 +90,87 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# =========================================================================
+# Chart version resolution
+# =========================================================================
+# 'latest' and 'previous' are resolved from the tags of the chart registry, so
+# a new kata-deploy release moves the suite along without anyone editing it.
+CHART_REGISTRY_REPO="${CHART_REGISTRY_REPO:-ghcr.io/kata-containers/kata-deploy-charts/kata-deploy}"
+
+# Released chart versions, oldest first. Pre-release tags (0.0.0-dev, the
+# occasional -testing) are left out: they are not points to upgrade between.
+list_released_chart_versions() {
+    local repo="${CHART_REGISTRY_REPO#*/}" token
+
+    token=$(curl -fsSL --max-time 30 \
+        "https://ghcr.io/token?scope=repository:${repo}:pull&service=ghcr.io" \
+        | jq -r '.token // empty') || return 1
+    [ -n "${token}" ] || return 1
+
+    curl -fsSL --max-time 30 -H "Authorization: Bearer ${token}" \
+        "https://ghcr.io/v2/${repo}/tags/list" \
+        | jq -r '.tags[]?' \
+        | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+        | sort -V
+}
+
+# Resolve one version slot. Concrete versions are passed through untouched, so
+# nothing here runs unless a keyword is actually used.
+resolve_chart_version() {
+    local what="$1" requested="$2" pinned_keyword="$3" pinned="$4" versions count
+
+    case "${requested}" in
+        latest|previous) ;;
+        *) echo "${requested}"; return 0 ;;
+    esac
+
+    # Every test case is a separate invocation of this script; reuse what the
+    # setup run resolved so a release landing mid-suite cannot split a run
+    # across two versions.
+    if [ -n "${pinned}" ] && [ "${pinned_keyword}" = "${requested}" ]; then
+        echo "${pinned}"
+        return 0
+    fi
+
+    if ! versions=$(list_released_chart_versions) || [ -z "${versions}" ]; then
+        echo "ERROR: could not list released chart versions of ${CHART_REGISTRY_REPO}." >&2
+        echo "       Pass ${what} a concrete version to run without the registry." >&2
+        exit 1
+    fi
+
+    count=$(echo "${versions}" | wc -l)
+    if [ "${requested}" = "previous" ] && [ "${count}" -lt 2 ]; then
+        echo "ERROR: ${CHART_REGISTRY_REPO} has a single release, so there is no" >&2
+        echo "       'previous' to upgrade from. Pass ${what} a concrete version." >&2
+        exit 1
+    fi
+
+    if [ "${requested}" = "latest" ]; then
+        echo "${versions}" | tail -1
+    else
+        echo "${versions}" | tail -2 | head -1
+    fi
+}
+
+# What the setup run resolved, if this is a --skip-setup invocation.
+if [ "${SKIP_SETUP}" = true ] && [ -f "${RESULTS_DIR}/env.sh" ]; then
+    # shellcheck disable=SC1091
+    source "${RESULTS_DIR}/env.sh"
+fi
+
+REQUESTED_FROM_VERSION="${FROM_VERSION}"
+REQUESTED_TO_VERSION="${TO_VERSION}"
+FROM_VERSION=$(resolve_chart_version --from-version "${FROM_VERSION}" \
+    "${REQUESTED_FROM_VERSION_PIN:-}" "${RESOLVED_FROM_VERSION:-}")
+TO_VERSION=$(resolve_chart_version --to-version "${TO_VERSION}" \
+    "${REQUESTED_TO_VERSION_PIN:-}" "${RESOLVED_TO_VERSION:-}")
+
+describe_chart_version() {
+    if [ "$1" = "$2" ]; then echo "$1"; else echo "$1 ($2)"; fi
+}
+echo "[INFO] Upgrade under test: $(describe_chart_version "${FROM_VERSION}" "${REQUESTED_FROM_VERSION}")" \
+     "-> $(describe_chart_version "${TO_VERSION}" "${REQUESTED_TO_VERSION}")"
+
 # A kata-deploy image only fits the chart it shipped with: it expects the mounts
 # and security context that chart renders, and running it under another
 # version's chart crash-loops the pod, which shows up as an upgrade that never
@@ -95,9 +181,8 @@ check_chart_image_pair() {
     local dev_chart="0.0.0-dev" dev_tag="kata-containers-latest"
 
     [ -n "${image}" ] || return 0
-    # An unset version leaves the harness on its default, which is a release.
-    if [ "${image##*:}" = "${dev_tag}" ] && [ "${version:-release default}" != "${dev_chart}" ]; then
-        echo "ERROR: ${what} pairs the ${dev_tag} image with chart ${version:-release default}."
+    if [ "${image##*:}" = "${dev_tag}" ] && [ "${version}" != "${dev_chart}" ]; then
+        echo "ERROR: ${what} pairs the ${dev_tag} image with chart ${version}."
         echo "       That image is built from kata main, so it needs the chart"
         echo "       built from main: pass ${dev_chart} as the version, or point"
         echo "       at the image released with that chart."
@@ -439,6 +524,10 @@ export KUBECONFIG="${KUBECONFIG}"
 export WORKER_NODE_A="${WORKER_NODE_A}"
 export WORKER_NODE_B="${WORKER_NODE_B}"
 export CONTROL_PLANE="${CONTROL_PLANE}"
+export REQUESTED_FROM_VERSION_PIN="${REQUESTED_FROM_VERSION}"
+export REQUESTED_TO_VERSION_PIN="${REQUESTED_TO_VERSION}"
+export RESOLVED_FROM_VERSION="${FROM_VERSION}"
+export RESOLVED_TO_VERSION="${TO_VERSION}"
 ENVEOF
 
     echo "::endgroup::"
