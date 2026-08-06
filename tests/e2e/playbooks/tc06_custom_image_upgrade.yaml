@@ -26,13 +26,23 @@
         version_fact_name: "_kata_version_before"
         version_label: "before upgrade"
 
+    # This test is about the helm-set-values plumbing, not about which image is
+    # installed, so with no image override configured it overrides with the one
+    # the target version ships anyway.
+    - name: Resolve the image to override with
+      ansible.builtin.set_fact:
+        _tc06_image: >-
+          {{ (kata_to_image
+              if kata_to_image | default('') | length > 0
+              else kata_deploy_default_repo ~ ':' ~ kata_to_version) | trim }}
+
     - name: Submit upgrade with explicit helm-set-values
       ansible.builtin.include_tasks: ../tasks/submit_upgrade.yaml
       vars:
         target_version: "{{ kata_to_version }}"
         node_selector: "katacontainers.io/kata-lifecycle-manager-window=true"
         extra_submit_args: >-
-          -p helm-set-values="image.reference={{ kata_to_image | regex_replace(':[^:]+$', '') }},image.tag={{ kata_to_image.split(':')[-1] }}"
+          -p helm-set-values="image.reference={{ _tc06_image | regex_replace(':[^:]+$', '') }},image.tag={{ _tc06_image.split(':')[-1] }}"
 
     - name: Wait for workflow to finish
       ansible.builtin.include_tasks: ../tasks/wait_workflow.yaml
@@ -46,7 +56,7 @@
       ansible.builtin.include_tasks: ../tasks/assertions/kata_deploy_image.yaml
       vars:
         node_name: "{{ worker_node_a }}"
-        expected_image: "{{ kata_to_image.split(':')[-1] }}"
+        expected_image: "{{ _tc06_image.split(':')[-1] }}"
 
     - name: Record kata binary version after upgrade
       ansible.builtin.include_tasks: ../tasks/assertions/kata_binary_version.yaml

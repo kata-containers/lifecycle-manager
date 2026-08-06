@@ -18,24 +18,21 @@ on:
         required: false
         default: "3.30.0"
       to_version:
-        description: "Kata Containers TO version (upgrade target chart; >= 3.31.0 for health probes)"
+        description: "Kata Containers TO version (upgrade target chart; 0.0.0-dev is the chart built from kata main)"
         required: false
-        default: "3.31.0"
+        default: "4.0.0"
       to_image:
-        description: "Override upgrade image (empty = default for version)"
+        description: "Override upgrade image (empty = the chart's own image; kata-containers-latest only goes with to_version=0.0.0-dev)"
         required: false
-        default: "quay.io/kata-containers/kata-deploy-ci:kata-containers-latest"
-      # NOTE: full job-mode functional runs are deferred until kata-deploy 3.32.0
-      # is released (no published chart exposes job mode yet). Choosing 'job' here
-      # currently fails fast at the kata-deploy install preflight with guidance,
-      # unless kata_deploy_chart points at a job-capable chart. Mode-detection,
-      # migration-guard, and batching tests run under the default daemonset mode.
-      # This is a workflow_dispatch-only input, so scheduled and pull_request runs
-      # always exercise daemonset mode; job-mode behaviour that depends on a live
-      # cluster (the install dispatcher scheduling while a wave is cordoned, for
-      # one) is not covered by CI until that release lands.
+        default: ""
+      # NOTE: job mode needs a chart that exposes deploymentMode, which released
+      # charts do from 3.32.0 on, so it can be dispatched from here. It stays a
+      # workflow_dispatch-only input though: scheduled and pull_request runs
+      # always exercise daemonset mode, which leaves job-mode behaviour that
+      # depends on a live cluster (the install dispatcher scheduling while a
+      # wave is cordoned, for one) outside the regular CI signal.
       deployment_mode:
-        description: "kata-deploy deployment mode under test (job is deferred until 3.32.0)"
+        description: "kata-deploy deployment mode under test (job needs a chart >= 3.32.0)"
         required: false
         type: choice
         options: [daemonset, job]
@@ -65,9 +62,16 @@ jobs:
     timeout-minutes: 180
     env:
       RUNTIME: ${{ matrix.runtime }}
-      FROM_VERSION: ${{ github.event.inputs.from_version || '3.30.0' }}
-      TO_VERSION: ${{ github.event.inputs.to_version || '3.31.0' }}
-      TO_IMAGE: ${{ github.event.inputs.to_image || 'quay.io/kata-containers/kata-deploy-ci:kata-containers-latest' }}
+      # A kata-deploy image only fits the chart it shipped with, so chart and
+      # image always move together here:
+      #   pull_request: released chart -> released chart, each running its own
+      #     image. Nothing outside the PR moves, so a red run is on the PR.
+      #   schedule: latest release -> the chart built from kata main (0.0.0-dev)
+      #     with the kata-containers-latest image that chart defaults to. A red
+      #     nightly means kata main and the lifecycle manager drifted apart.
+      FROM_VERSION: ${{ github.event.inputs.from_version || (github.event_name == 'schedule' && '4.0.0' || '3.30.0') }}
+      TO_VERSION: ${{ github.event.inputs.to_version || (github.event_name == 'schedule' && '0.0.0-dev' || '4.0.0') }}
+      TO_IMAGE: ${{ github.event.inputs.to_image || (github.event_name == 'schedule' && 'quay.io/kata-containers/kata-deploy-ci:kata-containers-latest' || '') }}
       DEPLOYMENT_MODE: ${{ github.event.inputs.deployment_mode || 'daemonset' }}
       BATCH_SIZE: ${{ github.event.inputs.batch_size || '1' }}
       KATA_DEPLOY_CHART: ${{ github.event.inputs.kata_deploy_chart || '' }}

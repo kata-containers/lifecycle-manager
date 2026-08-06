@@ -64,6 +64,34 @@
       ansible.builtin.debug:
         msg: "{{ _kata_pods.stdout }}"
 
+    # A kata-deploy pod that never turns ready is the usual reason an upgrade
+    # sits until the timeout, and the pod list alone does not say why.
+    - name: Dump details of kata-deploy pods that are not ready
+      ansible.builtin.shell: |
+        set -o pipefail
+        NOT_READY=$(kubectl get pods -n kube-system -l name=kata-deploy -o json 2>/dev/null \
+          | jq -r '.items[]
+                   | select([.status.containerStatuses[]? | select(.ready)] | length == 0)
+                   | .metadata.name')
+        for pod in ${NOT_READY}; do
+          echo "===== describe ${pod} ====="
+          kubectl describe pod "${pod}" -n kube-system 2>&1 || true
+          echo "===== logs ${pod} (previous run) ====="
+          kubectl logs "${pod}" -n kube-system --previous --tail=100 2>&1 || true
+          echo "===== logs ${pod} (current run) ====="
+          kubectl logs "${pod}" -n kube-system --tail=100 2>&1 || true
+        done
+      args:
+        executable: /bin/bash
+      register: _kata_pod_details
+      changed_when: false
+      failed_when: false
+
+    - name: Show details of kata-deploy pods that are not ready
+      ansible.builtin.debug:
+        msg: "{{ _kata_pod_details.stdout }}"
+      when: _kata_pod_details.stdout | default('') | trim | length > 0
+
     - name: Set workflow_wait_result for downstream tasks
       ansible.builtin.set_fact:
         workflow_wait_result:
