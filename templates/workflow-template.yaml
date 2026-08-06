@@ -147,6 +147,7 @@ spec:
         command: [bash]
         source: |
           set -e
+          apk add --no-cache -q jq 2>/dev/null || true
 
           RELEASE="{{`{{workflow.parameters.helm-release}}`}}"
           NS="{{`{{workflow.parameters.helm-namespace}}`}}"
@@ -214,8 +215,19 @@ spec:
           fi
           echo "✓ Batch size: $BATCH_SIZE node(s) per wave"
 
-          # Version gate (mode-specific)
-          if [ "$MODE" = "daemonset" ]; then
+          # Version gate (mode-specific). kata-containers publishes the chart
+          # built from main as 0.0.0-dev, which sorts below every release even
+          # though it carries everything the releases do, so only released
+          # targets are version-compared.
+          case "$TARGET_VERSION" in
+            *-dev*) UNRELEASED_TARGET="yes" ;;
+            *)      UNRELEASED_TARGET="" ;;
+          esac
+          if [ -n "$UNRELEASED_TARGET" ]; then
+            echo "✓ Target version $TARGET_VERSION is an unreleased chart; skipping the minimum-version check"
+            echo "  Note: it must be paired with the matching kata-deploy image; a chart"
+            echo "  built from main and a released image are not interchangeable."
+          elif [ "$MODE" = "daemonset" ]; then
             echo "Checking target version (kata-deploy chart >= $MIN_DAEMONSET_VERSION required for daemonset mode)..."
             LOWEST=$(printf '%s\n%s' "$MIN_DAEMONSET_VERSION" "$TARGET_VERSION" | sort -V | head -1)
             if [ "$LOWEST" != "$MIN_DAEMONSET_VERSION" ]; then
@@ -317,6 +329,20 @@ spec:
 
           if [ -n "$HELM_SET_VALUES" ]; then
             echo "✓ Extra helm --set values: $HELM_SET_VALUES"
+          fi
+
+          # The upgrade keeps the values the release was installed with, so an
+          # image the user pinned for the current version follows it to the
+          # target one. A kata-deploy image only fits the chart it was released
+          # with -- the pod expects the mounts and security context that chart
+          # renders -- so flag the pin instead of silently pairing them up.
+          PINNED_TAG=$(helm get values "$RELEASE" -n "$NS" -o json 2>/dev/null \
+            | jq -r '.image.tag // empty' 2>/dev/null || echo "")
+          if [ -n "$PINNED_TAG" ] && [ "$CURRENT_VERSION" != "$TARGET_VERSION" ]; then
+            echo ""
+            echo "NOTE: the release pins image.tag=$PINNED_TAG, so $TARGET_VERSION will run"
+            echo "      that image. Add helm-set-values=image.tag=<tag> if the target"
+            echo "      version needs its own image."
           fi
 
           echo ""
