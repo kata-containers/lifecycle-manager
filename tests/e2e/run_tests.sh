@@ -95,24 +95,8 @@ done
 # =========================================================================
 # 'latest' and 'previous' are resolved from the tags of the chart registry, so
 # a new kata-deploy release moves the suite along without anyone editing it.
-CHART_REGISTRY_REPO="${CHART_REGISTRY_REPO:-ghcr.io/kata-containers/kata-deploy-charts/kata-deploy}"
-
-# Released chart versions, oldest first. Pre-release tags (0.0.0-dev, the
-# occasional -testing) are left out: they are not points to upgrade between.
-list_released_chart_versions() {
-    local repo="${CHART_REGISTRY_REPO#*/}" token
-
-    token=$(curl -fsSL --max-time 30 \
-        "https://ghcr.io/token?scope=repository:${repo}:pull&service=ghcr.io" \
-        | jq -r '.token // empty') || return 1
-    [ -n "${token}" ] || return 1
-
-    curl -fsSL --max-time 30 -H "Authorization: Bearer ${token}" \
-        "https://ghcr.io/v2/${repo}/tags/list" \
-        | jq -r '.tags[]?' \
-        | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
-        | sort -V
-}
+# shellcheck source-path=SCRIPTDIR source=../lib/chart_versions.sh
+source "${SCRIPT_DIR}/../lib/chart_versions.sh"
 
 # Resolve one version slot. Concrete versions are passed through untouched, so
 # nothing here runs unless a keyword is actually used.

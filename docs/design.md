@@ -522,6 +522,10 @@ helm upgrade kata-lifecycle-manager <chart> -n argo --reuse-values \
   --set-json 'rbac.extraRules=[{"apiGroups":[""],"resources":["nodes/proxy"],"verbs":["get"]}]'
 ```
 
+`tests/rbac_coverage.py` renders both charts and compares their rules, so the gap
+shows up as a named rule rather than a failed upgrade. It runs on pull requests
+and daily ahead of the E2E nightly.
+
 ## User Experience
 
 ### Installation
