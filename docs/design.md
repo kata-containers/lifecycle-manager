@@ -438,6 +438,14 @@ kata-lifecycle-manager automatically reverts every node upgraded in this workflo
   reverted via a scoped `helm upgrade` back to the previous chart version (captured at
   workflow start), reinstalling the old artifacts on those nodes.
 
+Either way the release lands back on the values that version ran with. `helm rollback`
+gives that for free; the job-mode path reads them from the newest revision that ran the
+version being reverted to and drops the run's `helm-set-values`. Reusing the current values
+would leave the reverted upgrade's overrides - an image built for the newer chart, above
+all - on top of the older chart, which is exactly the mismatch a rollback is supposed to
+undo. When no past revision ran that version there is nothing to restore, so the current
+values are kept and the mismatch is called out in the logs.
+
 This ensures nodes are never left in a broken state.
 
 **Manual rollback:** For cases where you need to rollback a successfully upgraded node:

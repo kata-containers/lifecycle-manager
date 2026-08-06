@@ -413,7 +413,10 @@ kata-lifecycle-manager automatically reverts every node upgraded in this workflo
   pod and wait for it to be Ready with the previous version.
 - **job**: `helm rollback` would not re-run the dispatcher, so upgraded nodes are reverted by a
   scoped `helm upgrade` back to the previous chart version (reinstalling the old artifacts
-  on those nodes).
+  on those nodes). That upgrade restores the values of the newest revision that ran the
+  version being rolled back to, and drops the run's `helm-set-values`; going back to an
+  older chart means going back to the values that went with it, image pin included. If no
+  past revision ran that version, the current values are kept and the workflow says so.
 
 Then each reverted node is `uncordoned`, annotated `rolled-back`, and the workflow stops.
 This ensures nodes are never left in a broken state.

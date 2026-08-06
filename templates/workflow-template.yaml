@@ -969,7 +969,6 @@ spec:
           VERIFICATION_POD="{{`{{workflow.parameters.verification-pod}}`}}"
           TAINT_KEY="{{`{{workflow.parameters.node-taint-key}}`}}"
           TAINT_VALUE="{{`{{workflow.parameters.node-taint-value}}`}}"
-          HELM_SET_VALUES="{{`{{workflow.parameters.helm-set-values}}`}}"
           CHART="oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy"
           TIMEOUT=180
           NODES=$(echo "$NODES_JSON" | jq -r '.[]')
@@ -1119,20 +1118,21 @@ spec:
             else
               REVERT_LIST=$(echo "$NODES_TO_REVERT" | xargs | tr ' ' ',')
               echo "Reinstalling $PREVIOUS_VERSION on:$NODES_TO_REVERT"
+              ROLLBACK_TARGET_VERSION="$PREVIOUS_VERSION"
+              {{- include "kata-lifecycle-manager.rollbackValuesSnippet" . | nindent 14 }}
               {{- include "kata-lifecycle-manager.dispatcherTolerationSnippet" . | nindent 14 }}
+              # helm-set-values holds the overrides of the upgrade being
+              # reverted, so it is deliberately not re-applied here.
               HELM_ARGS=(
                 --namespace "$NS"
                 --install
                 --version "$PREVIOUS_VERSION"
-                --reset-then-reuse-values
+                "${ROLLBACK_VALUES_ARGS[@]}"
                 -f /tmp/kata-deploy-tolerations.yaml
                 --set "deploymentMode=job"
                 --set "job.nodes={${REVERT_LIST}}"
                 --set "verification.pod="
               )
-              if [ -n "$HELM_SET_VALUES" ]; then
-                HELM_ARGS+=(--set "$HELM_SET_VALUES")
-              fi
               helm upgrade "$RELEASE" "$CHART" "${HELM_ARGS[@]}" || true
             fi
           fi
@@ -1207,7 +1207,6 @@ spec:
           REQUESTED_MODE="{{`{{workflow.parameters.deployment-mode}}`}}"
           TAINT_KEY="{{`{{workflow.parameters.node-taint-key}}`}}"
           TAINT_VALUE="{{`{{workflow.parameters.node-taint-value}}`}}"
-          HELM_SET_VALUES="{{`{{workflow.parameters.helm-set-values}}`}}"
           CHART="oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy"
 
           # Resolve deployment mode (auto = detect from the release values)
@@ -1249,29 +1248,31 @@ spec:
             # the on-host artifacts.
             if [ -z "$ROLLBACK_VERSION" ]; then
               # Pick the chart version of the revision before the current one.
-              ROLLBACK_VERSION=$(helm history "$RELEASE" -n "$NS" -o json 2>/dev/null \
-                | jq -r 'sort_by(.revision) | .[-2].chart // ""' \
-                | sed 's/.*-//')
+              # Only the chart name is stripped, so pre-release versions such as
+              # 0.0.0-dev survive intact.
+              ROLLBACK_VERSION=$(helm history "$RELEASE" -n "$NS" --max 256 -o json 2>/dev/null \
+                | jq -r 'sort_by(.revision) | .[-2].chart // "" | ltrimstr("kata-deploy-")')
             fi
             if [ -z "$ROLLBACK_VERSION" ]; then
               echo "ERROR: could not determine a rollback version; pass -p rollback-version=<chart-version>"
               exit 1
             fi
             echo "Reinstalling kata-deploy $ROLLBACK_VERSION on node $NODE..."
+            ROLLBACK_TARGET_VERSION="$ROLLBACK_VERSION"
+            {{- include "kata-lifecycle-manager.rollbackValuesSnippet" . | nindent 12 }}
             {{- include "kata-lifecycle-manager.dispatcherTolerationSnippet" . | nindent 12 }}
+            # helm-set-values holds the overrides of the upgrade being reverted,
+            # so it is deliberately not re-applied here.
             HELM_ARGS=(
               --namespace "$NS"
               --install
               --version "$ROLLBACK_VERSION"
-              --reset-then-reuse-values
+              "${ROLLBACK_VALUES_ARGS[@]}"
               -f /tmp/kata-deploy-tolerations.yaml
               --set "deploymentMode=job"
               --set "job.nodes={${NODE}}"
               --set "verification.pod="
             )
-            if [ -n "$HELM_SET_VALUES" ]; then
-              HELM_ARGS+=(--set "$HELM_SET_VALUES")
-            fi
             helm upgrade "$RELEASE" "$CHART" "${HELM_ARGS[@]}"
           fi
 
