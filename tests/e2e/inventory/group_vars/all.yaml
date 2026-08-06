@@ -17,10 +17,9 @@ cluster_disk: 100
 #   daemonset - long-running DaemonSet (chart default; min version 3.27.0)
 #   job       - dispatcher-driven per-node install Jobs (min version 3.32.0)
 #
-# NOTE: full job-mode functional testing is deferred until kata-deploy 3.32.0 is
-# released. No published chart exposes job mode yet, so selecting 'job' fails fast
-# at the install preflight unless kata_deploy_chart points at a job-capable chart.
-# The daemonset default exercises mode-detection, the migration guard, and batching.
+# Job mode needs a chart that exposes deploymentMode, which released charts do
+# from 3.32.0 on; older ones fail fast at the install preflight. The daemonset
+# default exercises mode-detection, the migration guard, and batching.
 deployment_mode: "daemonset"
 
 # Number of nodes upgraded per wave (1 = strict node-by-node).
@@ -34,13 +33,19 @@ min_job_version: "3.32.0"
 # -- Kata Versions --
 # FROM = initial install version; TO = upgrade target.
 # Minimum supported: 3.27.0 (daemonset) / 3.32.0 (job).
-kata_from_version: "3.27.0"
-kata_to_version: "3.31.0"
+# 0.0.0-dev is the chart kata-containers publishes from main.
+kata_from_version: "3.30.0"
+kata_to_version: "4.0.0"
 
 # Image overrides for CI builds.
-# Empty string = use default chart image for that version.
+# Empty string = the image the chart of that version defaults to, which is what
+# a version should normally run: a kata-deploy image expects the mounts and
+# security context rendered by the chart it shipped with, so pairing it with
+# another version's chart crash-loops the pod. The rolling
+# kata-deploy-ci:kata-containers-latest image belongs to the 0.0.0-dev chart;
+# run_tests.sh refuses any other combination.
 kata_from_image: ""
-kata_to_image: "quay.io/kata-containers/kata-deploy-ci:kata-containers-latest"
+kata_to_image: ""
 
 # job mode: override for the kata-deploy-job-dispatcher image (empty = chart default).
 # When testing a CI kata-deploy image, point this at the matching dispatcher image.

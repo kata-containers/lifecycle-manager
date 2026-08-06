@@ -44,8 +44,11 @@ Options:
   --skip-cluster-create                     Reuse existing cluster
   --skip-cluster-delete                     Keep cluster after tests
   --from-version <version>                  Override kata_from_version
-  --to-version <version>                    Override kata_to_version
-  --to-image <image>                        Override kata_to_image
+  --to-version <version>                    Override kata_to_version (0.0.0-dev = chart
+                                            built from kata main)
+  --to-image <image>                        Override kata_to_image (empty = the image the
+                                            chart of that version defaults to; must stay
+                                            on the same side of released vs. main)
   --deployment-mode <daemonset|job>         Override deployment_mode (default: daemonset)
   --batch-size <N>                          Override batch_size (default: 1 = node-by-node)
   --kata-deploy-chart <ref|path>            Override kata_deploy_chart (OCI ref or local
@@ -81,6 +84,34 @@ while [[ $# -gt 0 ]]; do
         *)                   echo "Unknown option: $1"; usage; exit 1 ;;
     esac
 done
+
+# A kata-deploy image only fits the chart it shipped with: it expects the mounts
+# and security context that chart renders, and running it under another
+# version's chart crash-loops the pod, which shows up as an upgrade that never
+# finishes. kata-containers-latest is built from main, so 0.0.0-dev (the chart
+# published from main) is the only chart it goes with.
+check_chart_image_pair() {
+    local what="$1" version="$2" image="$3"
+    local dev_chart="0.0.0-dev" dev_tag="kata-containers-latest"
+
+    [ -n "${image}" ] || return 0
+    # An unset version leaves the harness on its default, which is a release.
+    if [ "${image##*:}" = "${dev_tag}" ] && [ "${version:-release default}" != "${dev_chart}" ]; then
+        echo "ERROR: ${what} pairs the ${dev_tag} image with chart ${version:-release default}."
+        echo "       That image is built from kata main, so it needs the chart"
+        echo "       built from main: pass ${dev_chart} as the version, or point"
+        echo "       at the image released with that chart."
+        exit 1
+    fi
+    if [ "${version}" = "${dev_chart}" ] && [ "${image##*:}" != "${dev_tag}" ]; then
+        echo "ERROR: ${what} pairs chart ${dev_chart} with image ${image}."
+        echo "       The chart built from main needs an image built from main;"
+        echo "       leave the image empty to take the one the chart defaults to."
+        exit 1
+    fi
+}
+
+check_chart_image_pair "--to-version/--to-image" "${TO_VERSION}" "${TO_IMAGE}"
 
 # =========================================================================
 # Log Rotation
