@@ -1,0 +1,22 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Assert that the kata-deploy release still carries a user-supplied value.
+# Required vars: value_path (jq filter, e.g. '.shims.disableAll'), expected_value
+---
+- name: Get user-supplied values of the kata-deploy release
+  ansible.builtin.shell:
+    cmd: >-
+      helm get values {{ helm_release }} -n {{ helm_namespace }} -o json
+      | jq -r '{{ value_path }}'
+  register: _helm_release_value
+  changed_when: false
+
+- name: Assert {{ value_path }} is {{ expected_value }}
+  ansible.builtin.assert:
+    that:
+      - _helm_release_value.stdout | trim == expected_value | string
+    fail_msg: >-
+      Release value {{ value_path }} is '{{ _helm_release_value.stdout | trim }}',
+      expected '{{ expected_value }}' (the release lost values it was installed with)
+    success_msg: "Release value {{ value_path }} is '{{ expected_value }}'"

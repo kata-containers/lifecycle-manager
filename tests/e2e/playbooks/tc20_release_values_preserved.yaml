@@ -1,0 +1,128 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# TC-20: kata-deploy Release Values Preserved Across an Upgrade
+#
+# Narrows the kata-deploy release to a single shim (as a curated profile such as
+# try-kata-nvidia-gpu.values.yaml does), then runs a managed upgrade. The
+# workflow must carry the release's own values over to the new chart version:
+# helm's default upgrade behaviour resets a release to plain chart defaults,
+# which silently re-enables every shim the chart ships.
+---
+- name: "TC-20: kata-deploy Release Values Preserved Across an Upgrade"
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Reset environment
+      ansible.builtin.include_tasks: ../tasks/reset_environment.yaml
+
+    - name: Determine chart source (remote OCI/HTTP ref vs local path)
+      ansible.builtin.set_fact:
+        _tc20_chart_is_remote: "{{ kata_deploy_chart is match('^(oci|https?)://') }}"
+
+    - name: Set chart version argument and shim key
+      ansible.builtin.set_fact:
+        _tc20_version_arg: "{{ ('--version ' + kata_from_version) if _tc20_chart_is_remote else '' }}"
+        _tc20_shim: "{{ kata_runtime_class | regex_replace('^kata-', '') }}"
+
+    - name: Record kata runtimeclasses installed from chart defaults
+      ansible.builtin.shell:
+        cmd: kubectl get runtimeclass -o name | grep kata | sort || true
+      register: _tc20_rc_default
+      changed_when: false
+
+    - name: Narrow the kata-deploy release to the {{ kata_runtime_class }} shim only
+      ansible.builtin.command:
+        cmd: >-
+          helm upgrade {{ helm_release }} {{ kata_deploy_chart }} {{ _tc20_version_arg }}
+          --namespace {{ helm_namespace }}
+          --reuse-values
+          --set shims.disableAll=true
+          --set shims.{{ _tc20_shim }}.enabled=true
+      register: _tc20_narrow
+      changed_when: _tc20_narrow.rc == 0
+
+    - name: Record kata runtimeclasses before the upgrade
+      ansible.builtin.shell:
+        cmd: kubectl get runtimeclass -o name | grep kata | sort || true
+      register: _tc20_rc_before
+      changed_when: false
+
+    # Guards the test itself: if narrowing had no effect the comparison after the
+    # upgrade would pass no matter what the workflow does to the release values.
+    - name: Assert narrowing reduced the runtimeclass set
+      ansible.builtin.assert:
+        that:
+          - _tc20_rc_before.stdout_lines | length < _tc20_rc_default.stdout_lines | length
+        fail_msg: >-
+          Narrowing did not reduce the runtimeclasses
+          ({{ _tc20_rc_default.stdout_lines | length }} by default,
+          {{ _tc20_rc_before.stdout_lines | length }} after disableAll)
+        success_msg: >-
+          Release narrowed from {{ _tc20_rc_default.stdout_lines | length }} to
+          {{ _tc20_rc_before.stdout_lines | length }} kata runtimeclass(es)
+
+    - name: Label worker_node_a for upgrade window
+      ansible.builtin.command:
+        cmd: >-
+          kubectl label node {{ worker_node_a }}
+          katacontainers.io/kata-lifecycle-manager-window=true
+          --overwrite
+
+    - name: Build extra submit args
+      ansible.builtin.set_fact:
+        _tc20_extra_args: >-
+          {{ '-p helm-set-values="' + kata_to_helm_set_values + '"'
+             if kata_to_helm_set_values | default('') | length > 0
+             else '' }}
+
+    - name: Submit upgrade workflow
+      ansible.builtin.include_tasks: ../tasks/submit_upgrade.yaml
+      vars:
+        target_version: "{{ kata_to_version }}"
+        node_selector: "katacontainers.io/kata-lifecycle-manager-window=true"
+        extra_submit_args: "{{ _tc20_extra_args }}"
+
+    - name: Wait for workflow to finish
+      ansible.builtin.include_tasks: ../tasks/wait_workflow.yaml
+
+    - name: Assert workflow succeeded
+      ansible.builtin.include_tasks: ../tasks/assertions/workflow_status.yaml
+      vars:
+        expected_status: "Succeeded"
+
+    - name: Assert the release is at the target chart version
+      ansible.builtin.include_tasks: ../tasks/assertions/helm_chart_version.yaml
+      vars:
+        expected_chart_version: "{{ kata_to_version }}"
+
+    - name: Assert the narrowed shim selection survived the upgrade
+      ansible.builtin.include_tasks: ../tasks/assertions/helm_values_contain.yaml
+      vars:
+        value_path: ".shims.disableAll"
+        expected_value: "true"
+
+    - name: Record kata runtimeclasses after the upgrade
+      ansible.builtin.shell:
+        cmd: kubectl get runtimeclass -o name | grep kata | sort || true
+      register: _tc20_rc_after
+      changed_when: false
+
+    - name: Assert the runtimeclass set is unchanged by the upgrade
+      ansible.builtin.assert:
+        that:
+          - _tc20_rc_after.stdout_lines == _tc20_rc_before.stdout_lines
+        fail_msg: >-
+          Upgrade changed the runtimeclasses from
+          {{ _tc20_rc_before.stdout_lines }} to {{ _tc20_rc_after.stdout_lines }};
+          the release was reset to chart defaults instead of reusing its values
+        success_msg: >-
+          Runtimeclasses unchanged across the upgrade
+          ({{ _tc20_rc_after.stdout_lines | length }}: {{ _tc20_rc_after.stdout_lines }})
+
+    - name: Assert node annotation status is completed
+      ansible.builtin.include_tasks: ../tasks/assertions/node_annotation.yaml
+      vars:
+        node_name: "{{ worker_node_a }}"
+        annotation_key: "katacontainers.io/kata-lifecycle-manager-status"
+        expected_value: completed

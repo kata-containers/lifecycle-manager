@@ -166,7 +166,7 @@ kubectl get nodes -l katacontainers.io/kata-runtime=true -o name | while read -r
   helm upgrade kata-deploy oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy \
     --namespace kube-system \
     --version "$VERSION" \
-    --reuse-values \
+    --reset-then-reuse-values \
     --wait
   
   # Wait for DaemonSet pod on this node
@@ -247,6 +247,24 @@ For each node selected by the label/taint selector:
 
 Other nodes continue running the previous version until their wave. With `batch-size=1`
 this is strict node-by-node.
+
+**Release values are the user's.** Every `helm upgrade` uses `--reset-then-reuse-values`,
+so the release keeps the values it was installed with and takes the new chart's defaults
+only where the user set nothing. Plain `helm upgrade` does the opposite - it recomputes the
+release from chart defaults plus whatever is on the command line - which would quietly turn
+a curated install (an NVIDIA GPU profile, say) back into the chart's full shim set. The
+workflow forces only what the rollout needs: the chart version, `updateStrategy.type` in
+daemonset mode, an empty `verification.pod` (verification is per node here), the job-mode
+wave scoping, and any explicit `helm-set-values`.
+
+**The job-mode dispatcher must be schedulable.** The per-node install Jobs carry a
+`nodeName` and so bypass the scheduler, but the dispatcher Job that fans them out is an
+ordinary scheduled pod rendered with the release's `tolerations`. A wave is cordoned before
+it is installed, so when the wave covers every schedulable node the dispatcher has nowhere
+to land and the upgrade blocks on a `Pending` hook. Job-mode upgrades therefore append a
+`node.kubernetes.io/unschedulable` toleration to the release's own list - the same
+allowance the DaemonSet controller makes implicitly in daemonset mode, and the same one the
+dispatcher already assumes when deciding which nodes it may install on.
 
 **Note:** Drain is not required for Kata upgrades. Running Kata VMs continue using
 the in-memory binaries. Only new workloads use the upgraded binaries. Cordon ensures
