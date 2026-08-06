@@ -823,11 +823,13 @@ spec:
             PARALLELISM=$(echo "$NODES" | wc -l | tr -d ' ')
             echo "=== Helm upgrade (job mode, wave: $NODE_LIST) ==="
             echo "Target version: $VERSION, parallelism: $PARALLELISM"
+            {{- include "kata-lifecycle-manager.dispatcherTolerationSnippet" . | nindent 12 }}
             HELM_ARGS=(
               --namespace "$NS"
               --install
               --version "$VERSION"
               --reset-then-reuse-values
+              -f /tmp/kata-deploy-tolerations.yaml
               --set "deploymentMode=job"
               --set "job.nodes={${NODE_LIST}}"
               --set "job.parallelism=${PARALLELISM}"
@@ -1117,11 +1119,13 @@ spec:
             else
               REVERT_LIST=$(echo "$NODES_TO_REVERT" | xargs | tr ' ' ',')
               echo "Reinstalling $PREVIOUS_VERSION on:$NODES_TO_REVERT"
+              {{- include "kata-lifecycle-manager.dispatcherTolerationSnippet" . | nindent 14 }}
               HELM_ARGS=(
                 --namespace "$NS"
                 --install
                 --version "$PREVIOUS_VERSION"
                 --reset-then-reuse-values
+                -f /tmp/kata-deploy-tolerations.yaml
                 --set "deploymentMode=job"
                 --set "job.nodes={${REVERT_LIST}}"
                 --set "verification.pod="
@@ -1254,11 +1258,13 @@ spec:
               exit 1
             fi
             echo "Reinstalling kata-deploy $ROLLBACK_VERSION on node $NODE..."
+            {{- include "kata-lifecycle-manager.dispatcherTolerationSnippet" . | nindent 12 }}
             HELM_ARGS=(
               --namespace "$NS"
               --install
               --version "$ROLLBACK_VERSION"
               --reset-then-reuse-values
+              -f /tmp/kata-deploy-tolerations.yaml
               --set "deploymentMode=job"
               --set "job.nodes={${NODE}}"
               --set "verification.pod="
