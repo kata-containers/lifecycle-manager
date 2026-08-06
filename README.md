@@ -387,6 +387,14 @@ is versioned `0.0.0-dev` and defaults to the matching
 `target-version` and skips the minimum-version check, since it sorts below every release
 while carrying everything they do.
 
+The same reuse has a subtler edge: values you never set follow the new chart's defaults,
+which is usually what you want but not when your own values depend on one of them. A
+release narrowed to a single shim with `shims.disableAll=true` and no `defaultShim` of its
+own is the case to watch — kata-deploy 4.0.0 moved that default from `qemu` to
+`qemu-runtime-rs`, and a default shim outside the narrowed set makes kata-deploy refuse to
+start. The curated profiles the chart ships pin `defaultShim` next to the shim selection;
+pin it too if you narrowed a release by hand.
+
 ### When to Use Drain
 
 **Default (drain disabled):** Drain is not required for Kata upgrades. Running Kata

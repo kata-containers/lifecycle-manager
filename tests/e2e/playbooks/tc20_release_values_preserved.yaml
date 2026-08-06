@@ -31,6 +31,13 @@
       register: _tc20_rc_default
       changed_when: false
 
+    # defaultShim is pinned along with the shim selection, as every curated
+    # profile the chart ships does. Leaving it at the chart default makes the
+    # release depend on that default staying inside the narrowed set, and it
+    # does not: 4.0.0 moved it from qemu to qemu-runtime-rs. The chart then
+    # renders no DEFAULT_SHIM for the architecture, kata-deploy falls back to
+    # its own built-in default, and refuses to start because that shim is not
+    # one of the configured ones.
     - name: Narrow the kata-deploy release to the {{ kata_runtime_class }} shim only
       ansible.builtin.command:
         cmd: >-
@@ -39,6 +46,8 @@
           --reuse-values
           --set shims.disableAll=true
           --set shims.{{ _tc20_shim }}.enabled=true
+          --set defaultShim.amd64={{ _tc20_shim }}
+          --set defaultShim.arm64={{ _tc20_shim }}
       register: _tc20_narrow
       changed_when: _tc20_narrow.rc == 0
 
@@ -101,6 +110,12 @@
       vars:
         value_path: ".shims.disableAll"
         expected_value: "true"
+
+    - name: Assert the pinned default shim survived the upgrade
+      ansible.builtin.include_tasks: ../tasks/assertions/helm_values_contain.yaml
+      vars:
+        value_path: ".defaultShim.amd64"
+        expected_value: "{{ _tc20_shim }}"
 
     - name: Record kata runtimeclasses after the upgrade
       ansible.builtin.shell:
