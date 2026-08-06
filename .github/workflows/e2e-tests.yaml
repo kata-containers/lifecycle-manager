@@ -30,6 +30,10 @@ on:
       # currently fails fast at the kata-deploy install preflight with guidance,
       # unless kata_deploy_chart points at a job-capable chart. Mode-detection,
       # migration-guard, and batching tests run under the default daemonset mode.
+      # This is a workflow_dispatch-only input, so scheduled and pull_request runs
+      # always exercise daemonset mode; job-mode behaviour that depends on a live
+      # cluster (the install dispatcher scheduling while a wave is cordoned, for
+      # one) is not covered by CI until that release lands.
       deployment_mode:
         description: "kata-deploy deployment mode under test (job is deferred until 3.32.0)"
         required: false
@@ -334,6 +338,19 @@ jobs:
         run: |
           ./run_tests.sh \
             --runtime "$RUNTIME" --tc 19 --skip-setup --skip-cluster-delete \
+            --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
+            --to-image "$TO_IMAGE" \
+            --deployment-mode "$DEPLOYMENT_MODE" --batch-size "$BATCH_SIZE" \
+            --kata-deploy-chart "$KATA_DEPLOY_CHART" \
+            --results-dir "$RESULTS_DIR"
+
+      - name: "TC-20: Release Values Preserved"
+        if: success() || failure()
+        continue-on-error: true
+        working-directory: tests/e2e
+        run: |
+          ./run_tests.sh \
+            --runtime "$RUNTIME" --tc 20 --skip-setup --skip-cluster-delete \
             --from-version "$FROM_VERSION" --to-version "$TO_VERSION" \
             --to-image "$TO_IMAGE" \
             --deployment-mode "$DEPLOYMENT_MODE" --batch-size "$BATCH_SIZE" \

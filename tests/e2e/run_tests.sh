@@ -270,6 +270,7 @@ TC_NAMES=(
     [17]="Reject Deployment-Mode Switch"
     [18]="Auto-Detect Deployment Mode"
     [19]="Wave Partial Failure Rollback"
+    [20]="Release Values Preserved"
 )
 
 declare -A TC_FILES

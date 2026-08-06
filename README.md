@@ -236,6 +236,14 @@ installs those nodes — giving the same wave-by-wave control. Rollback in job m
 use `helm rollback` (it would not re-run the dispatcher), so a failed node is reverted by a
 scoped re-upgrade to the previous chart version.
 
+The per-node install Jobs are pinned with `nodeName` and run on cordoned nodes without
+help, but the dispatcher Job that creates them is scheduled normally. Since a wave is
+cordoned before it is installed, a wave covering every schedulable node (a single-node
+cluster, most obviously) would leave the dispatcher `Pending` on `FailedScheduling`. The
+workflow therefore adds a `node.kubernetes.io/unschedulable` toleration to the release's
+existing `tolerations` for job-mode upgrades, which is what the DaemonSet controller does
+implicitly in daemonset mode.
+
 > **Note:** kata-deploy keeps the DaemonSet as its default for now, but Job mode becomes the
 > default in Kata 4.0 and the DaemonSet is slated for removal around 4.2. Job mode is the
 > forward-looking path.
@@ -256,7 +264,7 @@ upgrades:
 # 1. One-time, cluster-wide switch to job mode (requires kata-deploy >= 3.32.0).
 helm upgrade <release> \
   oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy \
-  --namespace <ns> --version 3.32.0 --reuse-values \
+  --namespace <ns> --version 3.32.0 --reset-then-reuse-values \
   --set deploymentMode=job --set verification.pod=
 
 # 2. Confirm nodes are labeled, then run wave-by-wave upgrades as usual.
@@ -323,6 +331,27 @@ For each wave of up to `batch-size` selected nodes:
 
 If verification fails in any wave, the workflow stops immediately, preventing a large
 mixed-version fleet (already-verified waves keep the new version).
+
+### What the Upgrade Does to Your kata-deploy Values
+
+Every `helm upgrade` the workflow runs uses `--reset-then-reuse-values`, so the release
+keeps the values it was installed with — a curated shim selection (for instance
+`try-kata-nvidia-gpu.values.yaml`), snapshotter setup, tolerations, node selectors — while
+picking up the new chart's defaults for anything you never set yourself. Only these are
+forced on top:
+
+| Value | Set to | Why |
+|-------|--------|-----|
+| chart version | `target-version` | the upgrade itself |
+| `updateStrategy.type` (daemonset) | `OnDelete` | so only the wave's pods restart |
+| `verification.pod` | empty | kata-lifecycle-manager verifies per node instead |
+| `deploymentMode`, `job.nodes`, `job.parallelism` (job) | the current wave | scope the dispatcher to the wave |
+| `tolerations` (job) | your list plus the cordon taint | the dispatcher Job must schedule while the wave is cordoned |
+| anything in `helm-set-values` | your override | explicit per-run overrides |
+
+This matters because plain `helm upgrade` resets a release to chart defaults: without value
+reuse an install narrowed to six RuntimeClasses would come back with every shim the chart
+ships.
 
 ### When to Use Drain
 
