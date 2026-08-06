@@ -1,0 +1,41 @@
+# Copyright (c) 2026 The Kata Containers Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Kubernetes will not let the workflow install kata-deploy's ClusterRole unless
+# it holds every permission that role grants, so a kata-deploy release that
+# widens it breaks upgrades here. The E2E suite does catch that, but only by
+# spending a cluster and an hour on a run where every test case fails the same
+# opaque way, and only for the modes and versions that run has time for.
+#
+# Rendering the two charts and comparing their rules takes seconds and no
+# cluster, so it runs on pull requests, and daily ahead of the E2E nightly to
+# catch a kata-deploy release even while nobody is opening pull requests.
+
+name: RBAC Coverage
+
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "30 1 * * *"
+  workflow_dispatch:
+
+jobs:
+  rbac-coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+
+      - name: Check the ClusterRole covers what kata-deploy grants
+        run: tests/rbac_coverage.py
