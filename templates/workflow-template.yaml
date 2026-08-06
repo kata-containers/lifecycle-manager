@@ -905,9 +905,29 @@ spec:
           NS="{{`{{workflow.parameters.helm-namespace}}`}}"
           NODES=$(echo "$NODES_JSON" | jq -r '.[]')
 
+          # A node that never comes back is almost always a kata-deploy pod that
+          # refuses to start, and the reason is in its log: an image that does
+          # not match the chart, or a configuration the new version rejects.
+          # Without this the step just reports the wait timing out, and the
+          # rollback that follows takes the evidence with it.
+          explain_node() {
+            local NODE="$1" POD
+            POD=$(kubectl get pods -n "$NS" -l name=kata-deploy \
+              --field-selector spec.nodeName="$NODE" -o json 2>/dev/null \
+              | jq -r '.items[0].metadata.name // empty')
+            [ -n "$POD" ] || return 0
+            echo "--- kata-deploy pod $POD on $NODE ---"
+            kubectl get pod "$POD" -n "$NS" -o wide 2>/dev/null || true
+            kubectl logs "$POD" -n "$NS" --tail=30 2>/dev/null || true
+            kubectl logs "$POD" -n "$NS" --tail=30 --previous 2>/dev/null || true
+            kubectl describe pod "$POD" -n "$NS" 2>/dev/null | sed -n '/^Events:/,$p' || true
+            echo "--- end of $POD ---"
+          }
+
           fail_node() {
             local NODE="$1"
             echo "ERROR: node $NODE not ready, cleaning up"
+            explain_node "$NODE"
             kubectl annotate node "$NODE" --overwrite katacontainers.io/kata-lifecycle-manager-status="failed" || true
             kubectl uncordon "$NODE" || true
           }
