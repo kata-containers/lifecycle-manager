@@ -34,6 +34,10 @@ min_job_version: "3.32.0"
 # FROM = initial install version; TO = upgrade target.
 # Minimum supported: 3.27.0 (daemonset) / 3.32.0 (job).
 # 0.0.0-dev is the chart kata-containers publishes from main.
+#
+# run_tests.sh resolves 'previous' and 'latest' against the chart registry and
+# passes concrete versions in, so these only apply when a playbook is run
+# through ansible-playbook directly. Keep them at released versions.
 kata_from_version: "3.30.0"
 kata_to_version: "4.0.0"
 
