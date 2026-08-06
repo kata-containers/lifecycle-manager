@@ -88,6 +88,20 @@ defaults:
   #   argo submit ... -p helm-set-values="image.reference=myregistry.io/kata-deploy,image.tag=my-custom-tag"
   helmSetValues: ""
 
+rbac:
+  # Extra rules appended to the kata-lifecycle-manager ClusterRole.
+  #
+  # Upgrading kata-deploy means applying its chart, and that chart carries
+  # kata-deploy's own ClusterRole. Kubernetes refuses to let an account hand out
+  # rights it does not hold, so this chart's ClusterRole mirrors every permission
+  # kata-deploy asks for. A kata-deploy release that adds one this chart does not
+  # mirror yet fails the upgrade with "attempting to grant RBAC permissions not
+  # currently held"; grant it here instead of waiting for a chart release:
+  #
+  #   helm upgrade kata-lifecycle-manager <chart> -n argo --reuse-values \
+  #     --set-json 'rbac.extraRules=[{"apiGroups":[""],"resources":["nodes/proxy"],"verbs":["get"]}]'
+  extraRules: []
+
 # Container image used by all workflow steps (Helm 4 + kubectl)
 # The repo builds it weekly (see .github/workflows/build-images.yaml) and pushes to GHCR.
 # Override to use your own registry or a pinned digest.

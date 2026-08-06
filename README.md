@@ -197,7 +197,30 @@ so you never end up with a large mixed-version fleet. See
 | `defaults.drainEnabled` | Enable node drain before upgrade | `false` |
 | `defaults.drainTimeout` | Timeout for drain operation | `300s` |
 | `defaults.helmSetValues` | Extra `--set` values for `helm upgrade` (see [Custom Image](#custom-image)) | `""` |
+| `rbac.extraRules` | Extra `ClusterRole` rules (see [When kata-deploy Asks for a New Permission](#when-kata-deploy-asks-for-a-new-permission)) | `[]` |
 | `images.utils` | Image with Helm 4 and kubectl (multi-arch) | `ghcr.io/kata-containers/lifecycle-manager-utils:latest` |
+
+### When kata-deploy Asks for a New Permission
+
+Upgrading applies the kata-deploy chart, which carries kata-deploy's own
+`ClusterRole`, and Kubernetes does not let an account grant rights it lacks. The
+lifecycle-manager `ClusterRole` therefore mirrors kata-deploy's, so a kata-deploy
+release that adds a permission this chart does not mirror yet fails the upgrade:
+
+```
+Error: UPGRADE FAILED: ... "kata-deploy-role" is forbidden: user
+"system:serviceaccount:argo:kata-lifecycle-manager" is attempting to grant RBAC
+permissions not currently held: {APIGroups:[""], Resources:["nodes/proxy"], Verbs:["get"]}
+```
+
+Grant the rule it names with `rbac.extraRules` and re-submit the workflow, rather
+than waiting for a release of this chart:
+
+```bash
+helm upgrade kata-lifecycle-manager oci://ghcr.io/kata-containers/kata-lifecycle-manager-charts/kata-lifecycle-manager \
+  -n argo --reuse-values \
+  --set-json 'rbac.extraRules=[{"apiGroups":[""],"resources":["nodes/proxy"],"verbs":["get"]}]'
+```
 
 ## Workflow Parameters
 
