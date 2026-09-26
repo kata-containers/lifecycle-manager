@@ -23,6 +23,9 @@
         cmd: "helm show values {{ kata_deploy_chart }} {{ _kd_version_arg }}"
       register: _kd_chart_values
       changed_when: false
+      retries: 3
+      delay: 5
+      until: _kd_chart_values.rc == 0
 
     - name: Assert the chart exposes deploymentMode
       ansible.builtin.assert:
@@ -73,6 +76,9 @@
       {{ kata_from_helm_set_values }}
   register: helm_install
   changed_when: helm_install.rc == 0
+  retries: 3
+  delay: 5
+  until: helm_install.rc == 0
 
 - name: Wait for kata-deploy DaemonSet to be ready (daemonset mode)
   ansible.builtin.include_tasks: wait_daemonset_ready.yaml

@@ -150,6 +150,10 @@ spec:
         source: |
           set -e
 
+          for tool in helm kubectl jq; do
+            command -v "$tool" >/dev/null || { echo "ERROR: utils image is missing $tool"; exit 127; }
+          done
+
           RELEASE="{{`{{workflow.parameters.helm-release}}`}}"
           NS="{{`{{workflow.parameters.helm-namespace}}`}}"
           VERIFICATION_POD="{{`{{workflow.parameters.verification-pod}}`}}"
