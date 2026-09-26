@@ -95,6 +95,7 @@ results_max_total_mb: 2048
 registry_port: 5000
 registry_container_name: kata-e2e-registry
 kata_deploy_default_repo: "quay.io/kata-containers/kata-deploy"
+e2e_utils_image: "ghcr.io/kata-containers/lifecycle-manager-utils:e2e"
 
 # -- Derived (populated at runtime by setup/reset tasks) --
 registry_host: ""

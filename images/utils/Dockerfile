@@ -1,15 +1,15 @@
 # Copyright (c) 2026 The Kata Containers Authors
 # SPDX-License-Identifier: Apache-2.0
 
-# Alpine-based image with Helm 4 and kubectl for all Argo workflow steps.
+# Alpine-based image with Helm 4, kubectl, and jq for all Argo workflow steps.
 # Built weekly for security updates; used by kata-lifecycle-manager workflow.
 
 ARG ALPINE_VERSION=3.21
 FROM alpine:${ALPINE_VERSION}
 
-# Install bash, curl, ca-certificates, openssl, tar; then Helm 4 and kubectl
+# Install shell tools and jq; then Helm 4 and kubectl
 # hadolint ignore=DL3018
-RUN apk add --no-cache bash curl ca-certificates openssl tar && \
+RUN apk add --no-cache bash curl ca-certificates openssl tar jq && \
     export USE_SUDO=false && \
     curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-4 | bash && \
     helm version && \

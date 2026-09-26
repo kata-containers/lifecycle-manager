@@ -32,6 +32,24 @@
   register: _registry_start
   changed_when: _registry_start.rc == 0
 
+- name: Set local workflow utils image reference
+  ansible.builtin.set_fact:
+    _e2e_utils_local_image: >-
+      localhost:{{ registry_port }}/{{ e2e_utils_image | regex_replace('^[^/]+/', '') }}
+
+- name: Build workflow utils image for this checkout
+  ansible.builtin.command:
+    cmd: >-
+      podman build -t {{ _e2e_utils_local_image }}
+      {{ playbook_dir }}/../../../images/utils
+  changed_when: true
+
+- name: Push workflow utils image to local registry
+  ansible.builtin.command:
+    cmd: >-
+      podman push --tls-verify=false {{ _e2e_utils_local_image }}
+  changed_when: true
+
 - name: Compute from-version image reference
   ansible.builtin.set_fact:
     _from_image: >-
@@ -51,7 +69,7 @@
 - name: Collect unique upstream registries
   ansible.builtin.set_fact:
     _mirror_registries: >-
-      {{ _cache_images
+      {{ (_cache_images + [e2e_utils_image])
          | map('regex_replace', '^([^/]+)/.*$', '\1')
          | unique | list }}
 

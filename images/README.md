@@ -1,6 +1,6 @@
 # Workflow image (utils)
 
-Single image used by all kata-lifecycle-manager Argo workflow steps. Contains **Helm 4** and **kubectl**.
+Single image used by all kata-lifecycle-manager Argo workflow steps. Contains **Helm 4**, **kubectl**, and **jq**.
 
 | Purpose | Tools used |
 |---------|------------|
@@ -9,7 +9,7 @@ Single image used by all kata-lifecycle-manager Argo workflow steps. Contains **
 
 ## Weekly build
 
-The repo builds and pushes this image **weekly** (and on manual dispatch) via [Build workflow image](../.github/workflows/build-images.yaml). Pushed image:
+The repo builds and pushes this image **weekly**, when its Dockerfile changes on `main`, and on manual dispatch via [Build workflow image](../.github/workflows/build-images.yaml). Pushed image:
 
 - `ghcr.io/kata-containers/lifecycle-manager-utils:latest` (and `:<sha>`)
 
