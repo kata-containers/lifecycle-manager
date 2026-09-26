@@ -90,6 +90,7 @@ jobs:
           done
 
       - name: Setup cluster and prerequisites
+        id: setup
         working-directory: tests/e2e
         run: |
           ./run_tests.sh \
@@ -104,7 +105,7 @@ jobs:
             --results-dir "$RESULTS_DIR"
 
       - name: "TC-01: Basic Upgrade"
-        if: success() || failure()
+        if: steps.setup.outcome == 'success'
         continue-on-error: true
         working-directory: tests/e2e
         run: |
@@ -117,7 +118,7 @@ jobs:
             --results-dir "$RESULTS_DIR"
 
       - name: "TC-02: Auto-Rollback Verification Failure"
-        if: success() || failure()
+        if: steps.setup.outcome == 'success'
         continue-on-error: true
         working-directory: tests/e2e
         run: |
@@ -130,7 +131,7 @@ jobs:
             --results-dir "$RESULTS_DIR"
 
       - name: "TC-03: Manual Rollback"
-        if: success() || failure()
+        if: steps.setup.outcome == 'success'
         continue-on-error: true
         working-directory: tests/e2e
         run: |
@@ -143,7 +144,7 @@ jobs:
             --results-dir "$RESULTS_DIR"
 
       - name: "TC-04: Taint and Combined Selection"
-        if: success() || failure()
+        if: steps.setup.outcome == 'success'
         continue-on-error: true
         working-directory: tests/e2e
         run: |
@@ -156,7 +157,7 @@ jobs:
             --results-dir "$RESULTS_DIR"
 
       - name: "TC-05: Upgrade with Drain"
-        if: success() || failure()
+        if: steps.setup.outcome == 'success'
         continue-on-error: true
         working-directory: tests/e2e
         run: |
@@ -169,7 +170,7 @@ jobs:
             --results-dir "$RESULTS_DIR"
 
       - name: "TC-06: Custom Image Upgrade"
-        if: success() || failure()
+        if: steps.setup.outcome == 'success'
         continue-on-error: true
         working-directory: tests/e2e
         run: |
@@ -182,7 +183,7 @@ jobs:
             --results-dir "$RESULTS_DIR"
 
       - name: "TC-07: Verification Pod Override"
-        if: success() || failure()
+        if: steps.setup.outcome == 'success'
         continue-on-error: true
         working-directory: tests/e2e
         run: |
@@ -195,7 +196,7 @@ jobs:
             --results-dir "$RESULTS_DIR"
 
       - name: "TC-08: No Matching Nodes"
-        if: success() || failure()
+        if: steps.setup.outcome == 'success'
         continue-on-error: true
         working-directory: tests/e2e
         run: |
@@ -208,7 +209,7 @@ jobs:
             --results-dir "$RESULTS_DIR"
 
       - name: "TC-09: Timeout Auto-Rollback"
-        if: success() || failure()
+        if: steps.setup.outcome == 'success'
         continue-on-error: true
         working-directory: tests/e2e
         run: |
@@ -221,7 +222,7 @@ jobs:
             --results-dir "$RESULTS_DIR"
 
       - name: "TC-10: Same Version Re-upgrade (Idempotency)"
-        if: success() || failure()
+        if: steps.setup.outcome == 'success'
         continue-on-error: true
         working-directory: tests/e2e
         run: |
@@ -234,7 +235,7 @@ jobs:
             --results-dir "$RESULTS_DIR"
 
       - name: "TC-11: No Workload Disruption"
-        if: success() || failure()
+        if: steps.setup.outcome == 'success'
         continue-on-error: true
         working-directory: tests/e2e
         run: |
@@ -247,7 +248,7 @@ jobs:
             --results-dir "$RESULTS_DIR"
 
       - name: "TC-12: DaemonSet Target Node Only"
-        if: success() || failure()
+        if: steps.setup.outcome == 'success'
         continue-on-error: true
         working-directory: tests/e2e
         run: |
@@ -260,7 +261,7 @@ jobs:
             --results-dir "$RESULTS_DIR"
 
       - name: "TC-13: Node-by-Node Sequential"
-        if: success() || failure()
+        if: steps.setup.outcome == 'success'
         continue-on-error: true
         working-directory: tests/e2e
         run: |
@@ -273,7 +274,7 @@ jobs:
             --results-dir "$RESULTS_DIR"
 
       - name: "TC-14: Partial Failure Stops"
-        if: success() || failure()
+        if: steps.setup.outcome == 'success'
         continue-on-error: true
         working-directory: tests/e2e
         run: |
@@ -286,7 +287,7 @@ jobs:
             --results-dir "$RESULTS_DIR"
 
       - name: "TC-15: Drain Multi-Node"
-        if: success() || failure()
+        if: steps.setup.outcome == 'success'
         continue-on-error: true
         working-directory: tests/e2e
         run: |
@@ -299,7 +300,7 @@ jobs:
             --results-dir "$RESULTS_DIR"
 
       - name: "TC-16: Wave-Based Batch Upgrade"
-        if: success() || failure()
+        if: steps.setup.outcome == 'success'
         continue-on-error: true
         working-directory: tests/e2e
         run: |
@@ -312,7 +313,7 @@ jobs:
             --results-dir "$RESULTS_DIR"
 
       - name: "TC-17: Reject Deployment-Mode Switch"
-        if: success() || failure()
+        if: steps.setup.outcome == 'success'
         continue-on-error: true
         working-directory: tests/e2e
         run: |
@@ -325,7 +326,7 @@ jobs:
             --results-dir "$RESULTS_DIR"
 
       - name: "TC-18: Auto-Detect Deployment Mode"
-        if: success() || failure()
+        if: steps.setup.outcome == 'success'
         continue-on-error: true
         working-directory: tests/e2e
         run: |
@@ -338,7 +339,7 @@ jobs:
             --results-dir "$RESULTS_DIR"
 
       - name: "TC-19: Wave Partial Failure Rollback"
-        if: success() || failure()
+        if: steps.setup.outcome == 'success'
         continue-on-error: true
         working-directory: tests/e2e
         run: |
@@ -351,7 +352,7 @@ jobs:
             --results-dir "$RESULTS_DIR"
 
       - name: "TC-20: Release Values Preserved"
-        if: success() || failure()
+        if: steps.setup.outcome == 'success'
         continue-on-error: true
         working-directory: tests/e2e
         run: |
