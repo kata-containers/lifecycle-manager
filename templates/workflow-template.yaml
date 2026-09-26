@@ -30,8 +30,10 @@ spec:
   entrypoint: deploy-version
   serviceAccountName: {{ include "kata-lifecycle-manager.serviceAccountName" . }}
 
+  {{- if .Values.podGCStrategy }}
   podGC:
-    strategy: OnWorkflowSuccess
+    strategy: {{ .Values.podGCStrategy }}
+  {{- end }}
 
   arguments:
     parameters:

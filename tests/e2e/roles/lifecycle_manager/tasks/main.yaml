@@ -24,6 +24,7 @@
       --namespace {{ argo_namespace }}
       --history-max 5
       --set-file defaults.verificationPod={{ _verification_pod_path }}
+      --set podGCStrategy=
       --set defaults.drainEnabled=false
       --set defaults.helmSetValues=""
   args:

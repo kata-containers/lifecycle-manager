@@ -4,6 +4,10 @@
 # Argo Workflows namespace where the WorkflowTemplate will be created
 argoNamespace: argo
 
+# Delete workflow pods after success. Set to "" to retain them until the
+# Workflow is deleted, for example when reading logs without an artifact store.
+podGCStrategy: OnWorkflowSuccess
+
 # Default workflow parameters (can be overridden when submitting workflows)
 defaults:
   # Helm release name for kata-deploy
