@@ -46,13 +46,14 @@ on:
         required: false
         default: ""
 
-concurrency:
-  group: e2e-tests
-  cancel-in-progress: false
-
 jobs:
+  # Keep setup, cleanup, and reporting in one job so they use the same runner.
   e2e:
     runs-on: kata-non-coco-x64
+    permissions:
+      contents: read
+      checks: write
+      actions: read
     strategy:
       fail-fast: false
       matrix:
@@ -365,7 +366,7 @@ jobs:
             --results-dir "$RESULTS_DIR"
 
       - name: Generate reports
-        if: always()
+        if: always() && steps.setup.outcome == 'success'
         working-directory: tests/e2e
         run: |
           ./run_tests.sh \
@@ -390,90 +391,72 @@ jobs:
           path: results-${{ matrix.runtime }}/
           retention-days: 30
 
-  cleanup:
-    runs-on: kata-non-coco-x64
-    needs: [e2e]
-    if: always()
-    timeout-minutes: 15
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
       - name: Rotate old results on disk
+        if: always()
         working-directory: tests/e2e
         run: |
           ./run_tests.sh --rotate-logs-only
 
       - name: Prune journal logs
+        if: always()
         run: |
           sudo journalctl --vacuum-time=7d --vacuum-size=1G 2>/dev/null || true
 
-  report:
-    runs-on: kata-non-coco-x64
-    needs: [e2e, cleanup]
-    if: always()
-    permissions:
-      checks: write
-      actions: read
-    timeout-minutes: 10
-    steps:
-      - name: Download all results
-        uses: actions/download-artifact@v7
-        with:
-          pattern: results-*
-          path: all-results/
-
-      - name: List downloaded artifacts
-        run: find all-results/ -type f 2>/dev/null || echo "No artifacts downloaded"
-
-      - name: Generate combined summary
+      - name: Add run summary
+        if: always()
         run: |
           echo "## E2E Test Results" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-
-          found=false
-          while IFS= read -r -d '' summary; do
-            found=true
-            dir=$(dirname "$summary")
-            runtime=$(basename "$dir" | sed 's/results-//')
-            echo "### ${runtime}" >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            cat "$summary" >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-          done < <(find all-results/ -name summary.md -print0 2>/dev/null)
-
-          if [ "$found" = false ]; then
+          echo "### ${RUNTIME}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.setup.outcome }}" != "success" ]; then
+            echo "Setup failed; test cases were skipped." >> "$GITHUB_STEP_SUMMARY"
+          elif [ -f "$RESULTS_DIR/summary.md" ]; then
+            cat "$RESULTS_DIR/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          else
             echo "No results found." >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Publish JUnit results
+        if: always() && steps.setup.outcome == 'success'
         continue-on-error: true
         uses: mikepenz/action-junit-report@v6
         with:
-          report_paths: "all-results/**/junit.xml"
-          check_name: "E2E Test Results"
+          report_paths: "results-${{ matrix.runtime }}/junit.xml"
+          check_name: "E2E Test Results (${{ matrix.runtime }})"
           fail_on_failure: true
 
       - name: Final verdict
+        if: always()
         run: |
-          TOTAL_FAILED=0
-          while IFS= read -r -d '' results_file; do
-            FAILED=$(python3 -c "
+          if [ "${{ steps.setup.outcome }}" != "success" ]; then
+            echo "[FAIL] Setup did not complete; test cases were skipped"
+            exit 1
+          fi
+
+          if [ ! -f "$RESULTS_DIR/results.json" ]; then
+            echo "[FAIL] Test results are missing"
+            exit 1
+          fi
+
+          COUNTS=$(python3 - "$RESULTS_DIR/results.json" <<'PY'
           import json
-          with open('${results_file}') as f:
-              print(sum(1 for r in json.load(f) if r['status'] == 'FAILED'))
-          " 2>/dev/null || echo "0")
-            TOTAL_FAILED=$((TOTAL_FAILED + FAILED))
-          done < <(find all-results/ -name results.json -print0 2>/dev/null)
+          import sys
 
-          if [ "$TOTAL_FAILED" -gt 0 ]; then
-            echo "[FAIL] ${TOTAL_FAILED} test(s) failed across all runtimes"
+          with open(sys.argv[1]) as results_file:
+              results = json.load(results_file)
+          print(len(results), sum(1 for result in results if result["status"] == "FAILED"))
+          PY
+          )
+          read -r TOTAL FAILED <<< "$COUNTS"
+          if [ "$TOTAL" -ne 20 ]; then
+            echo "[FAIL] Expected 20 test results for ${RUNTIME}, found ${TOTAL}"
             exit 1
           fi
 
-          if [ "${{ needs.e2e.result }}" != "success" ]; then
-            echo "[FAIL] E2E job did not succeed (result: ${{ needs.e2e.result }})"
+          if [ "$FAILED" -gt 0 ]; then
+            echo "[FAIL] ${FAILED} test(s) failed for ${RUNTIME}"
             exit 1
           fi
 
-          echo "[PASS] All tests passed across all runtimes"
+          echo "[PASS] All ${RUNTIME} tests passed"
