@@ -62,7 +62,7 @@ spec:
         description: "Taint value filter (optional, only used with node-taint-key)"
       - name: utils-image
         value: {{ .Values.images.utils | quote }}
-        description: "Container image with Helm 4 and kubectl for workflow steps"
+        description: "Container image with Helm 4, kubectl, and jq for workflow steps"
       - name: verification-namespace
         value: {{ .Values.defaults.verificationNamespace | quote }}
         description: "Namespace for verification pods"
@@ -149,7 +149,6 @@ spec:
         command: [bash]
         source: |
           set -e
-          apk add --no-cache -q jq 2>/dev/null || true
 
           RELEASE="{{`{{workflow.parameters.helm-release}}`}}"
           NS="{{`{{workflow.parameters.helm-namespace}}`}}"
@@ -374,7 +373,6 @@ spec:
         image: "{{`{{workflow.parameters.utils-image}}`}}"
         command: [sh]
         source: |
-          apk add --no-cache -q jq 2>/dev/null || true
 
           NODES_JSON='{{`{{inputs.parameters.nodes-json}}`}}'
           NODE_COUNT={{`{{inputs.parameters.node-count}}`}}
@@ -592,7 +590,6 @@ spec:
         command: [sh]
         source: |
           set -e
-          apk add --no-cache -q jq 2>/dev/null || true
           NODES_JSON='{{`{{inputs.parameters.nodes-json}}`}}'
           INDEX={{`{{inputs.parameters.index}}`}}
           BATCH_SIZE={{`{{workflow.parameters.batch-size}}`}}
@@ -679,7 +676,6 @@ spec:
         command: [bash]
         source: |
           set -e
-          apk add --no-cache -q jq 2>/dev/null || true
           NODES_JSON='{{`{{inputs.parameters.batch-nodes}}`}}'
           DRAIN_ENABLED="{{`{{workflow.parameters.drain-enabled}}`}}"
           DRAIN_TIMEOUT="{{`{{workflow.parameters.drain-timeout}}`}}"
@@ -805,7 +801,6 @@ spec:
         command: [bash]
         source: |
           set -e
-          apk add --no-cache -q jq 2>/dev/null || true
           MODE="{{`{{inputs.parameters.deployment-mode}}`}}"
           NODES_JSON='{{`{{inputs.parameters.batch-nodes}}`}}'
           NS="{{`{{workflow.parameters.helm-namespace}}`}}"
@@ -901,7 +896,6 @@ spec:
         command: [bash]
         source: |
           set -e
-          apk add --no-cache -q jq 2>/dev/null || true
           MODE="{{`{{inputs.parameters.deployment-mode}}`}}"
           NODES_JSON='{{`{{inputs.parameters.batch-nodes}}`}}'
           NS="{{`{{workflow.parameters.helm-namespace}}`}}"
@@ -1008,7 +1002,6 @@ spec:
         command: [bash]
         source: |
           # Don't use set -e - we need to reach rollback logic even on errors
-          apk add --no-cache -q jq 2>/dev/null || true
           MODE="{{`{{inputs.parameters.deployment-mode}}`}}"
           NODES_JSON='{{`{{inputs.parameters.batch-nodes}}`}}'
           PREVIOUS_VERSION="{{`{{inputs.parameters.previous-version}}`}}"
@@ -1249,7 +1242,6 @@ spec:
         command: [bash]
         source: |
           set -e
-          apk add --no-cache -q jq 2>/dev/null || true
           NODE="{{`{{inputs.parameters.node-name}}`}}"
           ROLLBACK_VERSION="{{`{{inputs.parameters.rollback-version}}`}}"
           RELEASE="{{`{{workflow.parameters.helm-release}}`}}"
