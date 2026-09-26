@@ -12,7 +12,7 @@
   ansible.builtin.command:
     cmd: >-
       kubectl apply -n {{ argo_namespace }}
-      -f https://github.com/argoproj/argo-workflows/releases/download/{{ argo_version }}/quick-start-minimal.yaml
+      -f https://github.com/argoproj/argo-workflows/releases/download/{{ argo_version }}/namespace-install.yaml
   register: argo_install
   changed_when: "'created' in argo_install.stdout or 'configured' in argo_install.stdout"
 
@@ -28,7 +28,6 @@
   loop:
     - argo-server
     - workflow-controller
-    - minio
   register: _patch
   changed_when: "'patched' in _patch.stdout"
 
@@ -40,5 +39,4 @@
   loop:
     - argo-server
     - workflow-controller
-    - minio
   changed_when: false
