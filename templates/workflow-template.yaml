@@ -752,13 +752,14 @@ spec:
           # the new chart's defaults for everything the user never set. Without it
           # helm resets the release to plain chart defaults, which silently widens
           # a curated install (e.g. an NVIDIA GPU profile) to every shim the chart
-          # ships. The explicit --set flags below outrank both, so OnDelete holds
-          # regardless of what the chart or the previous release defaulted to.
+          # ships. The explicit --set flags below keep the selected deployment
+          # mode and OnDelete strategy even if the new chart changes its defaults.
           HELM_ARGS=(
             --namespace "$NS"
             --install
             --version "$VERSION"
             --reset-then-reuse-values
+            --set deploymentMode=daemonset
             --set updateStrategy.type=OnDelete
             --set "verification.pod="
           )
